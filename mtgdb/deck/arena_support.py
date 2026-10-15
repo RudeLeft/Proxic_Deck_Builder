@@ -82,18 +82,19 @@ def load_supported_names(path):
         name for name in names if isinstance(name, str) and name)
 
 
-def unsupported_deck_names(deck, supported):
+def unsupported_deck_names(deck, supported, boards=("main", "side")):
     """Return the deck's distinct card names Arena holds no script for.
 
     Names are returned as they are stored, so they can be shown to the person
     who recognizes them, and deduplicated by lookup key, so one card listed in
     both boards is reported once. An empty ``supported`` set means the asset
-    was unavailable, and nothing is reported.
+    was unavailable, and nothing is reported. ``boards`` narrows the look to
+    what is actually exported, so a card left out is never reported as lost.
     """
     if not supported:
         return []
     found = {}
-    for board in ("main", "side"):
+    for board in boards:
         for entry in deck.entries(board):
             card = entry.get("card") or {}
             stored = str(card.get("name") or "").strip()

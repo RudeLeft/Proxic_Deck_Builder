@@ -33,6 +33,9 @@ from mtgdb.deck.arena_support import (
     ASSET_VERSION, front_face_name, load_supported_names,
     normalize_card_name, unsupported_deck_names,
 )
+from mtgdb.deck.arena_limits import (
+    ARENA_COPY_LIMIT, ARENA_MAX_CARDS, arena_deck_limits,
+)
 
 
 def _card(card_id, name, *, oracle_id=None, type_line="Creature",
@@ -356,12 +359,100 @@ def _arena_deck_report_check():
 
     clean = Deck("Arena Clean", "modern")
     clean.add(_card("bolt-only", "Lightning Bolt"), "main", 4)
+
+    side_only = Deck("Arena Side", "modern")
+    side_only.add(_card("bolt-main", "Lightning Bolt"), "main", 4)
+    side_only.add(_card("subgoyf-side", "Subgoyf"), "side", 2)
     return (
         reported == ["Cecily, Haunted Mage", "Subgoyf"]
+        # A card only in the sideboard is not exported, so it is not "lost".
+        and unsupported_deck_names(
+            side_only, supported, boards=("main",)) == []
+        and unsupported_deck_names(side_only, supported) == ["Subgoyf"]
         # A deck Arena can play in full says nothing at all.
         and unsupported_deck_names(clean, supported) == []
         # A stored entry with no name cannot be reported as a missing card.
         and unsupported_deck_names(nameless, supported) == [])
+
+
+def _arena_limits_check():
+    """ARN-007: the size and copy limits Proxic Arena export accepts.
+
+    The numbers are written out rather than read from the constants, so a
+    constant edited to the wrong value fails here instead of agreeing with
+    itself (VER-010).
+    """
+    plains = _card("plains", "Plains", type_line="Basic Land — Plains")
+    rats = _card("rats", "Relentless Rats")
+    rats["oracle_text"] = (
+        "A deck can have any number of cards named Relentless Rats.")
+    dwarves = _card("dwarves", "Seven Dwarves")
+    dwarves["oracle_text"] = (
+        "A deck can have up to seven cards named Seven Dwarves.")
+
+    at_limit = Deck("At Limit", "modern")
+    at_limit.add(_card("bolt", "Lightning Bolt"), "main", 4)
+    at_limit.add(plains, "main", 61)
+    exact = arena_deck_limits(at_limit)
+
+    one_over_size = Deck("One Over", "modern")
+    one_over_size.add(plains, "main", 66)
+    over_size = arena_deck_limits(one_over_size)
+
+    # The sideboard is not exported, so it counts toward neither limit: a
+    # 60-card deck with a 15-card sideboard (75 in all) is within the 65.
+    split = Deck("Split", "modern")
+    split.add(plains, "main", 40)
+    split.add(plains, "side", 26)
+    split.add(_card("bolt-side", "Lightning Bolt"), "side", 6)
+    split_limits = arena_deck_limits(split)
+
+    five = Deck("Five Bolts", "modern")
+    five.add(_card("bolt-a", "Lightning Bolt", set_code="lea"), "main", 4)
+    # A second printing still adds to the same name.
+    five.add(_card("bolt-b", "Lightning Bolt", set_code="m10"), "main", 1)
+    five_limits = arena_deck_limits(five)
+
+    faces = Deck("Faces", "modern")
+    faces.add(
+        _card("delver", "Delver of Secrets // Insectile Aberration"), "main", 3)
+    faces.add(_card("delver-front", "Delver of Secrets"), "main", 2)
+    face_limits = arena_deck_limits(faces)
+
+    exempt = Deck("Exempt", "modern")
+    exempt.add(rats, "main", 20)
+    exempt.add(dwarves, "main", 7)
+    exempt_limits = arena_deck_limits(exempt)
+
+    capped = Deck("Capped", "modern")
+    capped.add(dwarves, "main", 8)
+    capped_limits = arena_deck_limits(capped)
+
+    nameless = Deck("Nameless", "modern")
+    nameless.add(_card("blank", ""), "main", 9)
+    nameless_limits = arena_deck_limits(nameless)
+
+    return (
+        ARENA_MAX_CARDS == 65
+        and ARENA_COPY_LIMIT == 4
+        # Exactly at both limits is allowed.
+        and exact.total_cards == 65 and exact.allowed
+        # One card past the size limit is refused, and says by how many.
+        and over_size.total_cards == 66 and over_size.cards_over == 1
+        and not over_size.allowed and over_size.over_copy_limit == ()
+        and split_limits.total_cards == 40 and split_limits.allowed
+        # A fifth copy is refused, across printings.
+        and five_limits.over_copy_limit == (("Lightning Bolt", 5, 4),)
+        and not five_limits.allowed
+        # A double-faced card and its front face are one name to Arena.
+        and len(face_limits.over_copy_limit) == 1
+        and face_limits.over_copy_limit[0][1:] == (5, 4)
+        # Basic lands, "any number" cards and an "up to seven" card at seven.
+        and exempt_limits.allowed
+        # The card's own cap applies, not the generic four.
+        and capped_limits.over_copy_limit == (("Seven Dwarves", 8, 7),)
+        # A nameless entry counts toward size and cannot be listed as a card.
+        and nameless_limits.total_cards == 9 and nameless_limits.allowed)
 
 
 def _arena_shipped_asset_check():
@@ -664,6 +755,7 @@ def main():
         for name in (
             "mtgdb/deck/model.py", "mtgdb/deck/io.py", "mtgdb/deck/analysis.py",
             "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py",
+            "mtgdb/deck/arena_limits.py",
             "mtgdb/ui/app.py", "mtgdb/ui/deck.py",
             "mtgdb/ui/deck_files.py", "mtgdb/ui/deck_stats.py")
     }
@@ -816,7 +908,8 @@ def main():
             "tkinter" not in imports[name] and "sqlite3" not in imports[name]
             for name in (
                 "mtgdb/deck/model.py", "mtgdb/deck/io.py", "mtgdb/deck/analysis.py",
-                "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py")),
+                "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py",
+                "mtgdb/deck/arena_limits.py")),
         "model owns no parser, probability, randomness, or legality imports": (
             not ({"re", "json", "math", "random"} & imports["mtgdb/deck/model.py"])),
         "Arena lookup keys mirror the Proxic Arena name rule":
@@ -825,6 +918,8 @@ def main():
             _arena_unavailable_asset_check(),
         "a saved deck reports only the names Proxic Arena cannot play":
             _arena_deck_report_check(),
+        "Arena export limits count both boards, merge printings, and honor exemptions":
+            _arena_limits_check(),
         "the shipped Arena name asset is loadable and pre-normalized":
             _arena_shipped_asset_check(),
         "the Arena name asset has a refresh tool with a safe contract":

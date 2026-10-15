@@ -97,13 +97,15 @@ def _one_image_per_name_check():
     second = _card("bolt-m10", "Lightning Bolt", "m10")
     deck.add(first, "main", 1)
     deck.add(second, "main", 1)
+    deck.add(_card("mind", "Mind Stone", "m20"), "main", 1)
+    # A card held only in the sideboard is not exported, so it gets no art,
+    # and a sideboard printing of a main-deck name cannot displace the main one.
     deck.add(_card("side", "Subgoyf", "mb2"), "side", 2)
-    # Same name again in the other board.
     deck.add(_card("bolt-side", "Lightning Bolt", "4ed"), "side", 1)
     chosen = distinct_art_cards(deck)
     names = [front_face_name(card["name"]) for card in chosen]
     return (
-        names == ["Lightning Bolt", "Subgoyf"]
+        names == ["Lightning Bolt", "Mind Stone"]
         # The deck's own first printing of the name wins.
         and chosen[0]["id"] == "bolt-lea"
         and len(chosen) == 2)
@@ -115,13 +117,16 @@ def _bundle_layout_check():
     deck.add(_card("a", "Lightning Bolt", "lea"), "main", 4)
     deck.add(_card("c", "Éowyn, Lady of Rohan", "ltr"), "main", 1)
     # No upstream art for this one.
-    deck.add(_card("x", "Subgoyf", "mb2", png=None), "side", 1)
+    deck.add(_card("x", "Subgoyf", "mb2", png=None), "main", 1)
+    # Arena has no sideboard: this card must reach neither list nor art.
+    deck.add(_card("s", "Sideboard Only", "sbo"), "side", 3)
 
     with tempfile.TemporaryDirectory() as directory:
         base = pathlib.Path(directory)
         output = base / "Layout Probe.zip"
         job = ArenaExportJob.from_deck(
-            deck, deck_to_text(deck), output, base / "cache")
+            deck, deck_to_text(deck, include_side=False), output,
+            base / "cache")
         events = []
         result = build_export(
             job, _stub_downloader(),
@@ -142,6 +147,9 @@ def _bundle_layout_check():
             ]
             and decklist.startswith("// Layout Probe (commander)")
             and "Lightning Bolt" in decklist
+            # The sideboard is left out of the decklist and of the art.
+            and "Sideboard" not in decklist
+            and "Sideboard Only" not in decklist
             # The art-less card is reported, and did not fail the bundle.
             and result.missing_art == ("Subgoyf",)
             and result.image_count == 2
@@ -290,6 +298,91 @@ def _arena_warning_sentences_check():
         and over_rest == 5)
 
 
+def _limit_refusal_check():
+    """ARN-007: a deck over Arena's limits is refused before any save prompt."""
+    source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
+    deck_files = (ROOT / "mtgdb/ui/deck_files.py").read_text(encoding="utf-8")
+    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    snapshot = body.find("detached = self._detached_deck_copy(deck)")
+    measured = body.find("arena_deck_limits(detached)")
+    refused = body.find("_show_arena_list_dialog(*arena_limit_text(")
+    prompted = body.find("filedialog.asksaveasfilename(")
+    return (
+        # Snapshotted, measured, refused, and only then asked where to save.
+        0 <= snapshot < measured < refused < prompted
+        # The snapshot that was measured is the one exported: it is taken
+        # once, and the job is built from it rather than from the live deck.
+        and body.count("_detached_deck_copy(") == 1
+        and "ArenaExportJob.from_deck(\n            detached," in body
+        # The limits are not judged in the UI, and Save Deck As never asks.
+        and "arena_limits" not in deck_files
+        and "ARENA_MAX_CARDS" not in deck_files
+        and "messagebox." not in source)
+
+
+def _sideboard_exclusion_check():
+    """ARN-008: the sideboard is left out, checked against the exported deck."""
+    source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
+    deck_files = (ROOT / "mtgdb/ui/deck_files.py").read_text(encoding="utf-8")
+    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    with_side = Deck("With Side", "modern")
+    with_side.add(_card("a", "Lightning Bolt"), "main", 4)
+    with_side.add(_card("b", "Mind Stone"), "side", 2)
+    return (
+        # The decklist and the playability check both look at the main deck.
+        "include_side=False" in body
+        and 'boards=("main",)' in body
+        and "arena_sideboard_note(" in source
+        and "sideboard_count" in body
+        # Save Deck As keeps the sideboard, as ever.
+        and "include_side" not in deck_files
+        # The default still writes it, so every other save is unchanged.
+        and "Sideboard" in deck_to_text(with_side)
+        and "Sideboard" not in deck_to_text(with_side, include_side=False))
+
+
+def _arena_sideboard_sentence_check():
+    """ARN-008: the note's sentence, composed apart from its widgets."""
+    from mtgdb.ui.arena_export import arena_sideboard_note
+
+    return (
+        # No sideboard, no mention of one.
+        arena_sideboard_note(0) == ""
+        and arena_sideboard_note(1) == (
+            "Sideboard cards are not included in a Proxic Arena export. This "
+            "deck's sideboard (1 card) was left out.")
+        # The noun agrees with the count.
+        and arena_sideboard_note(15).endswith("(15 cards) was left out."))
+
+
+def _arena_limit_sentences_check():
+    """ARN-007: the refusal's sentences, composed apart from its widgets."""
+    from mtgdb.deck.arena_limits import ArenaDeckLimits
+    from mtgdb.ui.arena_export import (
+        ARENA_WARNING_NAME_LIMIT, arena_limit_text,
+    )
+
+    both = ArenaDeckLimits(
+        total_cards=72, over_copy_limit=(("Lightning Bolt", 6, 4),))
+    lead, shown, rest, closing = arena_limit_text(both)
+    many = ArenaDeckLimits(
+        total_cards=40, over_copy_limit=tuple(
+            (f"Card {index}", 5, 4)
+            for index in range(ARENA_WARNING_NAME_LIMIT + 3)))
+    _lead, over_shown, over_rest, _closing = arena_limit_text(many)
+    return (
+        # The limits are named in the lead, whichever one was broken.
+        "65 cards" in lead and "4 copies" in lead
+        and shown == [
+            "Deck size: 72 cards, 7 over the 65-card limit",
+            "Lightning Bolt: 6 copies, 2 over the limit of 4"]
+        and rest == 0
+        and closing == "Nothing was exported. Adjust the deck and try again."
+        # The listing is capped and the remainder counted, not dropped.
+        and len(over_shown) == ARENA_WARNING_NAME_LIMIT
+        and over_rest == 3)
+
+
 def main():
     checks = {
         "art filenames resolve through Arena's own index rule":
@@ -306,6 +399,14 @@ def main():
             _export_ui_check(),
         "the notice reads the same at every count":
             _arena_warning_sentences_check(),
+        "a deck over Arena's limits is refused before the save prompt":
+            _limit_refusal_check(),
+        "the refusal names the limits and lists each problem in plain words":
+            _arena_limit_sentences_check(),
+        "the sideboard is left out of the export and every check on it":
+            _sideboard_exclusion_check(),
+        "the user is told how many sideboard cards were left out":
+            _arena_sideboard_sentence_check(),
     }
     ok = True
     for label, passed in checks.items():

@@ -107,19 +107,19 @@ def art_filename(card):
 
 
 def distinct_art_cards(deck):
-    """Return one card per distinct name, mainboard first, in deck order.
+    """Return one card per distinct name of the main deck, in deck order.
 
-    Arena's art index is keyed by card name, so a second printing of the same
-    name could only overwrite the first. The deck's own first printing of a
-    name wins, which is the copy the player is holding.
+    Arena has no sideboard, so a card held only there is not exported and gets
+    no art. Arena's art index is keyed by card name, so a second printing of
+    the same name could only overwrite the first. The deck's own first printing
+    of a name wins, which is the copy the player is holding.
     """
     seen = {}
-    for board in ("main", "side"):
-        for entry in deck.entries(board):
-            card = entry.get("card") or {}
-            name = front_face_name(card.get("name")).casefold()
-            if name and name not in seen:
-                seen[name] = card
+    for entry in deck.entries("main"):
+        card = entry.get("card") or {}
+        name = front_face_name(card.get("name")).casefold()
+        if name and name not in seen:
+            seen[name] = card
     return list(seen.values())
 
 

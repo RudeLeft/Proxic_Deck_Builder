@@ -191,6 +191,19 @@ def _card_copy_limit(card, default_limit):
     return default_limit
 
 
+def group_copy_limit(cards, default_limit):
+    """Return the copy limit for every printing of one card name, or None.
+
+    One name can be stored as several printings. If any of them is unlimited
+    the name is; otherwise the most permissive finite limit among them applies.
+    """
+    limits = [_card_copy_limit(card, default_limit) for card in cards]
+    finite_limits = [limit for limit in limits if limit is not None]
+    if not finite_limits or len(finite_limits) != len(limits):
+        return None
+    return max(finite_limits)
+
+
 def _deck_format_key(deck):
     """Return the Scryfall lookup key for a deck's chosen format.
 
@@ -271,12 +284,7 @@ def legality_problems(deck):
         total_quantity = bucket["qty"]
 
         if rule is not None:
-            limits = [
-                _card_copy_limit(card, rule.copy_limit)
-                for card in bucket["cards"]
-            ]
-            finite_limits = [limit for limit in limits if limit is not None]
-            limit = None if len(finite_limits) != len(limits) else max(finite_limits)
+            limit = group_copy_limit(bucket["cards"], rule.copy_limit)
             if limit is not None and total_quantity > limit:
                 problems.append(
                     f"{name}: {total_quantity} copies "

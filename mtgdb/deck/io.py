@@ -77,11 +77,15 @@ def read_deck_text(path):
     return text.lstrip("\ufeff")
 
 
-def deck_to_text(deck):
-    """Serialize a portable TXT decklist preserving exact printings."""
+def deck_to_text(deck, include_side=True):
+    """Serialize a portable TXT decklist preserving exact printings.
+
+    ``include_side=False`` writes the main deck alone, for a destination that
+    has no sideboard (Proxic Arena export).
+    """
     lines = [f"// {deck.name} ({deck.fmt})", ""]
     lines.extend(_line_for(entry) for entry in deck.entries("main"))
-    side = deck.entries("side")
+    side = deck.entries("side") if include_side else []
     if side:
         lines.extend(("", "Sideboard"))
         lines.extend(_line_for(entry) for entry in side)

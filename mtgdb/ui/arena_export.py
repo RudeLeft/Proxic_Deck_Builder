@@ -7,8 +7,8 @@ boundary break inside `ui/deck_files.py` (LAYER-006).
 
 It owns no file format and no name rule: the zip layout and Arena's art naming
 belong to `arena/export.py`, the playable-name comparison to
-`deck/arena_support.py`, and the PNG download, cache and HTTP policy to
-`printing/service.py`.
+`deck/arena_support.py`, the size and copy limits to `deck/arena_limits.py`,
+and the PNG download, cache and HTTP policy to `printing/service.py`.
 """
 
 import logging
@@ -19,6 +19,9 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from mtgdb.arena.export import ArenaExportJob, build_export
+from mtgdb.deck.arena_limits import (
+    ARENA_COPY_LIMIT, ARENA_MAX_CARDS, arena_deck_limits,
+)
 from mtgdb.deck.arena_support import (
     load_supported_names, unsupported_deck_names,
 )
@@ -38,6 +41,48 @@ ARENA_WARNING_LEAD = (
     "The following cards in your deck are not in the Proxic Arena card pool "
     "and will not play properly")
 ARENA_WARNING_CLOSING = "The rest of the deck will play without issue."
+ARENA_LIMIT_LEAD = (
+    "This deck can't be exported for Proxic Arena yet. Proxic Arena accepts "
+    f"up to {ARENA_MAX_CARDS} cards, with no more than {ARENA_COPY_LIMIT} "
+    "copies of any card (basic lands and cards that allow any number of "
+    "copies are exempt).")
+ARENA_LIMIT_CLOSING = "Nothing was exported. Adjust the deck and try again."
+
+
+def arena_limit_text(limits):
+    """Return the refusal's lead line, listed problems, overflow count, closing.
+
+    Composed apart from the widgets, like the unplayable-card notice, so the
+    sentences are checked without a Tk root. Each listed line is one problem in
+    plain words: the deck's size, then each over-limit card by name.
+    """
+    lines = []
+    if limits.cards_over:
+        lines.append(
+            f"Deck size: {limits.total_cards} cards, {limits.cards_over} over "
+            f"the {ARENA_MAX_CARDS}-card limit")
+    for name, copies, allowed in limits.over_copy_limit:
+        lines.append(
+            f"{name}: {copies} copies, {copies - allowed} over the limit "
+            f"of {allowed}")
+    shown = lines[:ARENA_WARNING_NAME_LIMIT]
+    return (ARENA_LIMIT_LEAD, shown, len(lines) - len(shown),
+            ARENA_LIMIT_CLOSING)
+
+
+def arena_sideboard_note(count):
+    """Return the sentence telling the user their sideboard was left out.
+
+    Proxic Arena decks have no sideboard, so none is exported. An empty string
+    means there was nothing to leave out, and the report says nothing at all
+    about a sideboard. The count's noun agrees with it ("1 card", "7 cards").
+    """
+    if count <= 0:
+        return ""
+    noun = "card" if count == 1 else "cards"
+    return (
+        "Sideboard cards are not included in a Proxic Arena export. This "
+        f"deck's sideboard ({count} {noun}) was left out.")
 
 
 def arena_warning_text(unsupported):
@@ -63,7 +108,8 @@ class ArenaExportMixin:
         Arena draws real art only for files its client already holds, so a
         decklist on its own plays through generated art. This writes both as
         one zip -- the decklist, plus `real_cards/<Card Name> [SET].png` for
-        every distinct card -- and reports which cards Arena cannot play.
+        every distinct main-deck card -- and reports which cards Arena cannot
+        play. The sideboard is not exported, and the report says so.
 
         It returns nothing: the bundle is written on a worker, so a value
         returned here could only mean "started", which DUI-020 forbids a
@@ -74,9 +120,21 @@ class ArenaExportMixin:
             return
         self._sync_deck_meta()
         deck = self.deck_sessions[index].deck
-        if not deck.total("main") and not deck.total("side"):
+        if not deck.total("main"):
             self._show_arena_list_dialog(
-                "This deck has no cards to export yet.", [], 0, "")
+                "This deck has no cards in its main deck to export yet.",
+                [], 0, "")
+            return
+
+        # One snapshot is measured and then exported, so the deck that passed
+        # is the deck that is written, however long the save prompt stays open.
+        # Refused before asking where to save: a deck Arena will not accept
+        # should never reach a file dialog. The measurement is in-memory, so it
+        # needs no worker (DUI-017 concerns file work).
+        detached = self._detached_deck_copy(deck)
+        limits = arena_deck_limits(detached)
+        if not limits.allowed:
+            self._show_arena_list_dialog(*arena_limit_text(limits))
             return
 
         path = filedialog.asksaveasfilename(
@@ -86,9 +144,9 @@ class ArenaExportMixin:
         if not path:
             return
 
-        detached = self._detached_deck_copy(deck)
+        sideboard_count = detached.total("side")
         job = ArenaExportJob.from_deck(
-            detached, deck_to_text(detached), path,
+            detached, deck_to_text(detached, include_side=False), path,
             os.path.join(self.image_cache_dir, "print_png"))
         cancel_event = threading.Event()
         # Progress crosses threads through a queue rather than a Tk call from
@@ -100,7 +158,8 @@ class ArenaExportMixin:
                 progress.put((stage, current, total, detail))
             supported = load_supported_names(
                 _asset_path(ARENA_SUPPORTED_CARDS_FILE))
-            unsupported = unsupported_deck_names(detached, supported)
+            unsupported = unsupported_deck_names(
+                detached, supported, boards=("main",))
             result = build_export(
                 job, ensure_png, progress_cb=report,
                 cancel_event=cancel_event)
@@ -114,7 +173,7 @@ class ArenaExportMixin:
                 " %d unplayable", result.output_path, result.image_count,
                 result.card_count, len(result.missing_art), len(unsupported))
             self._status(f"Exported {os.path.basename(result.output_path)}")
-            self._report_arena_export(result, unsupported)
+            self._report_arena_export(result, unsupported, sideboard_count)
 
         self._status("Exporting for Proxic Arena\u2026")
         popup = self._show_arena_export_progress(len(job.cards), cancel_event)
@@ -210,15 +269,19 @@ class ArenaExportMixin:
                 pass
 
 
-    def _report_arena_export(self, result, unsupported):
+    def _report_arena_export(self, result, unsupported, sideboard_count=0):
         """Report what the bundle holds, and what Arena still cannot play.
 
-        One dialog rather than two: the write and the playability answer belong
-        to the same action, and a second popup to dismiss is not news.
+        One dialog rather than two: the write, the playability answer and the
+        note that the sideboard was left out belong to the same action, and a
+        second popup to dismiss is not news.
         """
         written = (
             f"Wrote {os.path.basename(result.output_path)}: "
             f"{result.image_count} card images for {result.card_count} cards.")
+        sideboard_note = arena_sideboard_note(sideboard_count)
+        if sideboard_note:
+            written = f"{written}\n\n{sideboard_note}"
         if unsupported:
             lead, shown, remaining, closing = arena_warning_text(unsupported)
             lead = f"{written}\n\n{lead}"

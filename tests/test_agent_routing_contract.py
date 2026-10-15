@@ -39,6 +39,8 @@ SOURCE_MARKERS = {
     "mtgdb/deck/legality.py": ("_FORMAT_RULES =", "def legality_problems("),
     "mtgdb/deck/arena_support.py": (
         "def normalize_card_name(", "def unsupported_deck_names("),
+    "mtgdb/deck/arena_limits.py": (
+        "ARENA_MAX_CARDS =", "def arena_deck_limits("),
     "mtgdb/arena/export.py": ("def art_filename(", "def build_export("),
     "mtgdb/deck/sessions.py": ("class DeckSession", "class DeckSessionManager"),
     "mtgdb/database/authorities.py": ("CATALOG_AUTHORITIES =", "SUBTYPE_AUTHORITIES ="),
