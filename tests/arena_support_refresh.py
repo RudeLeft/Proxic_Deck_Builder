@@ -13,11 +13,11 @@ repository and rewrites a source asset, so it is deliberately named outside the
 checks its contract without needing the Arena tree, the way
 `test_taxonomy_audit_contract.py` does for the taxonomy audit.
 
-Usage, from the project root:
+Usage, from the project root. The card scripts' location is always given, since
+nothing in this repository may depend on where another project keeps its files:
 
-    python tests/arena_support_refresh.py
     python tests/arena_support_refresh.py --cardsfolder <path to cardsfolder>
-    python tests/arena_support_refresh.py --check
+    python tests/arena_support_refresh.py --cardsfolder <path> --check
 
 `--check` writes nothing and exits nonzero when the shipped asset no longer
 matches the scripts, which is the question to ask after bumping Arena.
@@ -35,13 +35,6 @@ from mtgdb.deck.arena_support import (
     ASSET_VERSION, front_face_name, normalize_card_name,
 )
 from mtgdb.ui.assets import ARENA_SUPPORTED_CARDS_FILE
-
-# Where the Arena card scripts sit when both projects are checked out side by
-# side. Only a default: --cardsfolder overrides it, because nothing in this
-# repository may depend on the other project's location.
-DEFAULT_CARDSFOLDER = (
-    ROOT.parent / "Proxic_Arena" / "vendor" / "forge" / "forge-gui" / "res"
-    / "cardsfolder")
 
 NAME_PREFIX = "Name:"
 # A script Arena ships but marks as a variant it cannot play. The file exists,
@@ -118,8 +111,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Regenerate the Proxic Arena playable-name asset.")
     parser.add_argument(
-        "--cardsfolder", default=str(DEFAULT_CARDSFOLDER),
-        help="Path to the Proxic Arena cardsfolder tree.")
+        "--cardsfolder", required=True,
+        help="Path to a Forge cardsfolder tree: the one Proxic Arena ships, or "
+             "upstream Forge's forge-gui/res/cardsfolder.")
     parser.add_argument(
         "--check", action="store_true",
         help="Compare only; write nothing and exit nonzero when stale.")

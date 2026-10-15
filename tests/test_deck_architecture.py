@@ -506,9 +506,13 @@ def _arena_refresh_script_check():
         and "MINIMUM_CREDIBLE_NAMES" in source
         # A compare-only mode, which is the question to ask after an Arena bump.
         and '"--check"' in source
-        # The Arena tree's location is an overridable default, never a fixed
-        # dependency of this repository on the other project's path.
+        # The scripts' location is a required argument. This repository never
+        # names the other project's folder, so there is no default to rot when
+        # that project reorganizes.
         and '"--cardsfolder"' in source
+        and "required=True" in source
+        and "DEFAULT_CARDSFOLDER" not in source
+        and "Proxic_Arena" not in source
         # .gitattributes pins LF for this tree, so the asset is written with it.
         and r'newline="\n"' in source)
 

@@ -84,7 +84,7 @@ jobs:
             printf '```\n\n'
             printf 'To fix it:\n\n'
             printf '1. Update the copy of Forge inside Proxic Arena.\n'
-            printf '2. Rebuild the list here with `python tests/arena_support_refresh.py`.\n'
+            printf '2. Rebuild the list here with `python tests/arena_support_refresh.py --cardsfolder <path to Forge cardsfolder>`.\n'
             printf '3. Ship a new Proxic Deck Builder release.\n\n'
             printf 'This issue closes itself once the list is up to date.\n'
           } > issue.md

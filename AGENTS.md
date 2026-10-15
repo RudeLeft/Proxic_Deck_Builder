@@ -1188,9 +1188,9 @@ every feature together and is exempt.
   a reader MUST decline an asset whose version it does not recognize rather
   than guess at its contents. `tests/arena_support_refresh.py` MUST remain
   the one way that asset is regenerated, deriving its keys from
-  `deck/arena_support.py` rather than restating the rule, taking the Arena
-  tree as an overridable argument so this repository never depends on the
-  other project's location, offering a write-nothing `--check` comparison, and
+  `deck/arena_support.py` rather than restating the rule, taking the card
+  scripts' location as a required argument with no default, so this
+  repository never names the other project's folder, offering a write-nothing `--check` comparison, and
   refusing to replace a complete asset with a near-empty one when that tree is
   wrong or unreadable. It reads a tree outside this repository, so it MUST
   stay outside the `test_*.py` name the release suite runs and its contract
