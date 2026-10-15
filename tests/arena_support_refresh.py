@@ -50,6 +50,8 @@ UNSUPPORTED_MARKER = "<Unsupported Variant>"
 # A refresh that collapses to a handful of names means the tree was wrong or
 # unreadable, and MUST NOT be allowed to replace a complete asset with it.
 MINIMUM_CREDIBLE_NAMES = 10000
+# How many added names a comparison prints before counting the remainder.
+LISTED_NAME_LIMIT = 40
 
 
 def collect_supported_keys(cardsfolder):
@@ -144,8 +146,15 @@ def main(argv=None):
     else:
         was = set(previous.get("names") or ())
         now = set(payload["names"])
-        print(f"\n  names added:   {len(now - was)}")
+        added = sorted(now - was)
+        print(f"\n  names added:   {len(added)}")
         print(f"  names removed: {len(was - now)}")
+        # A short sample, so a report says which cards changed and not only
+        # how many; the full list is whatever a refresh would write.
+        for key in added[:LISTED_NAME_LIMIT]:
+            print(f"    + {key}")
+        if len(added) > LISTED_NAME_LIMIT:
+            print(f"    ... and {len(added) - LISTED_NAME_LIMIT} more")
 
     if args.check:
         print("\nSTALE: the asset does not match the card scripts. Re-run "

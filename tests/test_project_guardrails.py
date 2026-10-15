@@ -1126,10 +1126,11 @@ def main():
             owned_modules == expected_owned_modules),
         "Repository map names every production module": (
             expected_owned_modules <= repository_paths),
-        "Repository map names both workflow owners": (
+        "Repository map names every workflow owner": (
             {
                 ".github/workflows/build-windows.yml",
                 ".github/workflows/taxonomy-audit.yml",
+                ".github/workflows/forge-update-check.yml",
             } <= repository_paths),
         "every Feature-map path resolves to current source": (
             bool(feature_references)

@@ -7,8 +7,9 @@ on:
 
 permissions:
   contents: read
-  # Needed by the drift-alert step below, which opens a tracking issue when the
-  # audit fails so a new Scryfall layout/legality status cannot rot unnoticed.
+  # Needed by the failure-alert step below, which opens a tracking issue when
+  # the job fails so a new Scryfall layout/legality status, or a run that could
+  # not finish at all, cannot rot unnoticed.
   issues: write
 
 jobs:
@@ -39,28 +40,46 @@ jobs:
           path: taxonomy-audit.md
           if-no-files-found: warn
 
-      - name: Open a drift issue when the audit fails
-        # The audit exits non-zero only when current Scryfall data contains a
-        # layout or legality status this build cannot classify -- real drift that
-        # needs a code change. Turn that into an actionable, deduplicated issue
-        # instead of a buried failed-run email.
-        if: failure() && steps.audit.conclusion == 'failure'
+      - name: Open an issue and email the owner when the job fails
+        # Any failure needs a person: either the audit step itself exits
+        # non-zero, which happens only when current Scryfall data holds a layout
+        # or legality status this build cannot classify (real drift that needs a
+        # code change), or something before it broke and the audit never ran
+        # (install, network, a Scryfall outage). One deduplicated issue covers
+        # both. It is assigned to and mentions the repository owner because an
+        # assignment or mention is what GitHub always emails, whatever the
+        # owner's watch settings are -- a bare new issue from the Actions bot is
+        # emailed only to people watching every issue.
+        if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          AUDIT_RESULT: ${{ steps.audit.conclusion }}
         run: |
-          title="Scryfall taxonomy drift needs attention"
-          body_file=taxonomy-audit.md
-          if [ ! -f "$body_file" ]; then
-            printf 'The taxonomy audit failed before producing a report; see the run logs.\n' > "$body_file"
-          fi
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          printf '\n\n---\nAudit run: %s\n' "$run_url" >> "$body_file"
-          existing=$(gh issue list --state open --search "$title in:title" \
-            --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file "$body_file" \
-              || echo "::warning::Drift detected but could not comment on issue #$existing."
+          if [ "$AUDIT_RESULT" = "failure" ]; then
+            title="Scryfall taxonomy drift needs attention"
+            intro="The weekly Scryfall check found card data the app does not understand yet."
           else
-            gh issue create --title "$title" --body-file "$body_file" \
-              || echo "::warning::Drift detected but could not open a tracking issue."
+            title="Scheduled Scryfall taxonomy audit could not finish"
+            intro="The weekly Scryfall check stopped before it could look at the card data."
+          fi
+          {
+            printf '@%s %s\n\n' "$OWNER" "$intro"
+            if [ "$AUDIT_RESULT" = "failure" ] && [ -f taxonomy-audit.md ]; then
+              cat taxonomy-audit.md
+            fi
+            printf '\n\n---\nRun: %s\n' "$run_url"
+          } > issue.md
+          existing=$(gh issue list --state open --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null \
+            | head -n 1 || true)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue.md \
+              || echo "::warning::Could not comment on issue #$existing."
+          else
+            gh issue create --title "$title" --body-file issue.md \
+              --assignee "$OWNER" \
+              || gh issue create --title "$title" --body-file issue.md \
+              || echo "::warning::Could not open a tracking issue."
           fi

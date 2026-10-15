@@ -66,10 +66,15 @@ def main():
             and "tests/taxonomy_audit.py --current" in workflow),
         "CI retains Markdown audit evidence": (
             "taxonomy-audit.md" in workflow and "upload-artifact@v4" in workflow),
-        "CI alerts on drift by opening a tracking issue when the audit fails": (
+        "CI emails the owner by issue when the job fails, drift or not": (
             "issues: write" in workflow
-            and "steps.audit.conclusion == 'failure'" in workflow
-            and "gh issue create" in workflow),
+            # Any failure of the job, not only the audit step's own.
+            and "if: failure()" in workflow
+            and "steps.audit.conclusion" in workflow
+            and "gh issue create" in workflow
+            # Assigned and mentioned, which is what GitHub always emails.
+            and "--assignee" in workflow
+            and "@%s" in workflow),
     }
     ok = True
     for label, passed in checks.items():

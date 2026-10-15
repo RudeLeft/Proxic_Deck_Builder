@@ -513,6 +513,46 @@ def _arena_refresh_script_check():
         and r'newline="\n"' in source)
 
 
+def _forge_update_workflow_check():
+    """VER-015: upstream Forge's card scripts are compared weekly, and reported.
+
+    The workflow runs on GitHub, so this establishes its contract from the file
+    alone: what it checks out, which tool does the comparing, how a stale list
+    is told apart from a broken check, and that it only ever reports.
+    """
+    workflow = ROOT / ".github/workflows/forge-update-check.yml"
+    script = ROOT / "tests/arena_support_refresh.py"
+    if not workflow.is_file() or not script.is_file():
+        return False
+    text = workflow.read_text(encoding="utf-8")
+    tool = script.read_text(encoding="utf-8")
+    return (
+        "workflow_dispatch:" in text and "schedule:" in text
+        # Upstream's card scripts and nothing else of Forge.
+        and "repository: Card-Forge/forge" in text
+        and "sparse-checkout: forge-gui/res/cardsfolder" in text
+        # The one tool that owns the name rule, run in compare-only mode.
+        and "python tests/arena_support_refresh.py" in text
+        and "--cardsfolder forge-upstream/forge-gui/res/cardsfolder" in text
+        and "--check" in text
+        # A behind list is a result and a broken check is a failure, told apart
+        # by a marker the tool really prints.
+        and "grep -q '^STALE:'" in text
+        and 'print("\\nSTALE:' in tool
+        # The owner is told by an issue GitHub emails: assigned and mentioned.
+        and "issues: write" in text
+        and "gh issue create" in text
+        and "--assignee" in text
+        and "@%s" in text
+        # Kept current while open, and closed once the list matches again.
+        and "gh issue edit" in text
+        and "gh issue close" in text
+        # It reports. Rebuilding the list stays with a person.
+        and "contents: read" in text
+        and "git push" not in text
+        and "gh pr " not in text)
+
+
 def _import_roots(source):
     roots = set()
     for node in ast.walk(ast.parse(source)):
@@ -924,6 +964,8 @@ def main():
             _arena_shipped_asset_check(),
         "the Arena name asset has a refresh tool with a safe contract":
             _arena_refresh_script_check(),
+        "a weekly Forge check compares upstream card scripts and only reports":
+            _forge_update_workflow_check(),
         "the Arena asset location belongs to the shared asset owner": (
             'ARENA_SUPPORTED_CARDS_FILE = "arena/supported_cards.json"'
             in (ROOT / "mtgdb/ui/assets.py").read_text(encoding="utf-8")

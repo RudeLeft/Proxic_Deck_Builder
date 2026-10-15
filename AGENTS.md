@@ -152,6 +152,7 @@ pyproject.toml           # Python version, runtime deps, build deps, package dis
 build_windows.bat        # local Windows verification + build orchestration
 .github/workflows/build-windows.yml  # cloud Windows verification/build/artifact
 .github/workflows/taxonomy-audit.yml  # scheduled/manual full upstream taxonomy audit
+.github/workflows/forge-update-check.yml  # scheduled/manual check of upstream Forge card scripts against the Arena support list
 package_release.py       # mandatory source-release gates, validation, ZIP creation
 .gitignore               # excludes build/dist/build-venv, portable data, caches, archives
 .gitattributes           # pins LF line endings so a Windows checkout cannot rewrite every file
@@ -183,7 +184,7 @@ which dependency directions are legal.
 | Mana symbols / cost images | `mtgdb/ui/mana.py`, `mtgdb/ui/assets.py` | `assets/mana/*` |
 | Window / platform | `mtgdb/ui/window.py`, `mtgdb/ui/assets.py` | `mtgdb/main.py` |
 | App shell & shared services | `mtgdb/ui/app.py` | `mtgdb/core/*`, `mtgdb/search/controller.py`, `mtgdb/search/repository.py`, `mtgdb/database/db.py`, `mtgdb/database/sync.py`, `mtgdb/images/service.py`, `mtgdb/printing/service.py`, `mtgdb/deck/model.py`, `mtgdb/deck/sessions.py`, `mtgdb/comparison/models.py` |
-| Startup / packaging | — | `mtgdb/__main__.py`, `mtgdb/main.py`, `ProxicDeckBuilder.spec`, `pyproject.toml`, `build_windows.bat`, `.github/workflows/build-windows.yml`, `.github/workflows/taxonomy-audit.yml`, `package_release.py` |
+| Startup / packaging | — | `mtgdb/__main__.py`, `mtgdb/main.py`, `ProxicDeckBuilder.spec`, `pyproject.toml`, `build_windows.bat`, `.github/workflows/build-windows.yml`, `.github/workflows/taxonomy-audit.yml`, `.github/workflows/forge-update-check.yml`, `package_release.py` |
 
 Data-shape routing: when a Search or configurable Results/Table request needs a card field that is not already stored, inspect `mtgdb/database/schema.py` and `mtgdb/database/bulk_import.py` first, then update the Search/table owners. UI or Search modules must not synthesize a missing stored Scryfall field.
 
@@ -2436,6 +2437,22 @@ every feature together and is exempt.
   complete upstream dataset and is deliberately outside the local and cloud
   release gates, so passing VER-009 is never evidence that the audit itself
   happened. _Verification:_ **USER**.
+- **VER-015 — MUST:** Make each scheduled upstream check tell the repository
+  owner when it fails or has news, through one deduplicated GitHub issue that is
+  assigned to and mentions the owner, because an assignment or mention is what
+  GitHub always emails whatever the owner's watch settings are, where a bare
+  issue from the Actions bot is emailed only to people watching every issue.
+  `taxonomy-audit.yml` MUST do so for any failure of its job, whether the audit
+  found drift or the run never finished. `forge-update-check.yml` MUST check
+  out only upstream Forge's card scripts, compare them with the shipped Proxic
+  Arena support list through `tests/arena_support_refresh.py --check` rather
+  than a second spelling of the name rule (DECK-012), and tell the owner when
+  the list is behind and, separately, when the check itself could not run. A
+  stale list MUST be refreshed in place while its issue is open and closed once
+  the list matches again, so a list left behind does not email every week.
+  Neither workflow MAY rewrite the asset or open a pull request: rebuilding the
+  list belongs to a person, after Arena's own Forge has been updated.
+  _Verification:_ **AUTO**.
 - **VER-006 — MUST:** Run the Windows simulated-Tk-scaling geometry test at
   100/125/150% after a control, font, spacing, or layout change; report it only as
   Tk geometry coverage, not OS/per-monitor DPI certification.
@@ -2505,6 +2522,7 @@ the behavior it governs, update its test in the same change (CHG-007).
 | CLR-*, TYP-*, SIZ-*, LAY-* | `tests/test_ui_visual_contract.py`, `tests/test_ui_rendering_contract.py`, `windows_tests/test_ui_geometry_windows.py`, `windows_tests/test_app_startup_windows.py` |
 | BEH-*, callback safety | `tests/test_ui_callback_safety.py`, `tests/test_ui_component_contract.py` |
 | DATA-*, VER-009, VER-013 | `tests/test_trusted_filter_contract.py`, `tests/test_search_printings_cascade.py`, `tests/test_taxonomy_printings.py`, `tests/test_future_magic.py`, `tests/test_card_comparison.py`, `tests/test_taxonomy_audit_contract.py`; full upstream evidence: `.github/workflows/taxonomy-audit.yml` → `tests/taxonomy_audit.py --current` |
+| VER-015 | `tests/test_taxonomy_audit_contract.py`, `tests/test_deck_architecture.py`; live evidence: `.github/workflows/forge-update-check.yml` → `tests/arena_support_refresh.py --check` |
 | PORT-001 through PORT-005, PORT-007 | `tests/test_portability_contract.py`, `tests/test_hardening_regressions.py` |
 | PORT-006, single-instance | `windows_tests/test_single_instance_windows.py`, `tests/test_portability_contract.py` |
 | SIZ-003, SIZ-004, LAY-004, VER-006 simulated Tk scaling | `windows_tests/test_ui_geometry_windows.py`, `windows_tests/test_app_startup_windows.py` |

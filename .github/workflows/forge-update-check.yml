@@ -1,0 +1,146 @@
+name: Forge Card Update Check
+
+# Proxic Arena plays whatever card scripts its copy of Forge holds, and this app
+# ships the list of card names those scripts cover so an export can warn about
+# cards Arena would lose. When upstream Forge gains card scripts, that list is
+# behind until Arena's Forge is updated and the list is rebuilt. This weekly
+# check asks exactly that question and tells the repository owner by issue.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 12 * * 1"
+
+permissions:
+  contents: read
+  # Needed by the alert steps below, which open, update, and close the issue.
+  issues: write
+
+jobs:
+  forge-update-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project
+        run: python -m pip install -e .
+
+      - name: Check out upstream Forge's card scripts
+        # Only the card scripts, as a shallow sparse checkout: the rest of Forge
+        # is large and plays no part in the comparison.
+        uses: actions/checkout@v4
+        with:
+          repository: Card-Forge/forge
+          path: forge-upstream
+          sparse-checkout: forge-gui/res/cardsfolder
+          fetch-depth: 1
+
+      - name: Compare upstream card scripts with the shipped Arena support list
+        id: compare
+        # The refresh tool is the one place the name rule lives, so this reuses
+        # it in compare-only mode rather than restating the rule here. It exits
+        # 1 both when the list is behind (and prints STALE) and when it could not
+        # run at all, so the marker line tells the two apart: a stale list is a
+        # result to report, anything else is a failure of the check itself.
+        run: |
+          set +e
+          python tests/arena_support_refresh.py \
+            --cardsfolder forge-upstream/forge-gui/res/cardsfolder --check \
+            | tee forge-check.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          if grep -q '^STALE:' forge-check.txt; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 0 ]; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            exit "$code"
+          fi
+
+      - name: Tell the owner when Forge has card scripts the list lacks
+        # One issue at a time, assigned to and mentioning the owner so GitHub
+        # emails them. While it stays open it is only refreshed in place, so a
+        # list that stays behind for weeks does not send an email every week.
+        if: steps.compare.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          title="Forge has new cards, so the Proxic Arena support list is behind"
+          sha=$(git -C forge-upstream rev-parse HEAD)
+          {
+            printf '@%s Forge has added card scripts that the Proxic Arena support list does not cover yet.\n\n' "$OWNER"
+            printf 'Until the list is rebuilt, a deck using these cards will not be warned about correctly on export.\n\n'
+            printf 'Forge version checked: https://github.com/Card-Forge/forge/commit/%s\n\n' "$sha"
+            printf '```\n'
+            cat forge-check.txt
+            printf '```\n\n'
+            printf 'To fix it:\n\n'
+            printf '1. Update the copy of Forge inside Proxic Arena.\n'
+            printf '2. Rebuild the list here with `python tests/arena_support_refresh.py`.\n'
+            printf '3. Ship a new Proxic Deck Builder release.\n\n'
+            printf 'This issue closes itself once the list is up to date.\n'
+          } > issue.md
+          existing=$(gh issue list --state open --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null \
+            | head -n 1 || true)
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file issue.md \
+              || echo "::warning::Could not update issue #$existing."
+          else
+            gh issue create --title "$title" --body-file issue.md \
+              --assignee "$OWNER" \
+              || gh issue create --title "$title" --body-file issue.md \
+              || echo "::warning::Could not open a tracking issue."
+          fi
+
+      - name: Close the notice once the list is up to date again
+        if: steps.compare.outputs.stale == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="Forge has new cards, so the Proxic Arena support list is behind"
+          existing=$(gh issue list --state open --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null \
+            | head -n 1 || true)
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" \
+              --comment "The Proxic Arena support list matches Forge's card scripts again." \
+              || echo "::warning::Could not close issue #$existing."
+          fi
+
+      - name: Open an issue and email the owner when the check fails
+        # The check itself could not run (Forge unreachable, a layout change in
+        # its card scripts, the refresh tool refusing a near-empty result). That
+        # is not "there is an update", but it means no update can be seen, so it
+        # gets its own deduplicated issue rather than a silent red run.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          title="Forge update check could not run"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          {
+            printf '@%s The weekly check for new Forge cards stopped before it could finish, so Forge updates cannot be seen until it is fixed.\n\n' "$OWNER"
+            printf 'Run: %s\n' "$run_url"
+          } > issue.md
+          existing=$(gh issue list --state open --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null \
+            | head -n 1 || true)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue.md \
+              || echo "::warning::Could not comment on issue #$existing."
+          else
+            gh issue create --title "$title" --body-file issue.md \
+              --assignee "$OWNER" \
+              || gh issue create --title "$title" --body-file issue.md \
+              || echo "::warning::Could not open a tracking issue."
+          fi
