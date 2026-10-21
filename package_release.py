@@ -63,6 +63,7 @@ REQUIRED_RELEASE_MEMBERS = {
     Path("mtgdb/deck/analysis.py"),
     Path("mtgdb/deck/arena_limits.py"),
     Path("mtgdb/deck/arena_support.py"),
+    Path("mtgdb/deck/arena_tokens.py"),
     Path("mtgdb/deck/file_jobs.py"),
     Path("mtgdb/deck/io.py"),
     Path("mtgdb/deck/legality.py"),

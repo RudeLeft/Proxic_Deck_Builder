@@ -159,7 +159,8 @@ def _internal_import_allowed(module, imported):
     if module == "mtgdb/printing/service.py":
         return imported in {
             "mtgdb.core.net", "mtgdb.core.cache_names",
-            "mtgdb.core.background_jobs", "mtgdb.printing.renderer",
+            "mtgdb.core.background_jobs", "mtgdb.core.scryfall_json",
+            "mtgdb.printing.renderer",
         }
     if module == "mtgdb/printing/renderer.py":
         return False

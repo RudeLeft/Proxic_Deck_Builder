@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-import json
 import logging
 import os
 
 from mtgdb.core.background_jobs import (
     GenerationalWorker, JobCancelled, check_cancel,
 )
+from mtgdb.core.scryfall_json import card_faces
 
 from PIL import Image
 
@@ -83,6 +83,17 @@ def expanded_cards(deck):
     return cards
 
 
+def _face_images(card):
+    """``(face name, PNG url)`` for each face that carries its own image."""
+    images = []
+    for face in card_faces(card):
+        image_uris = face.get("image_uris")
+        png = image_uris.get("png") if isinstance(image_uris, dict) else None
+        if png:
+            images.append((str(face.get("name") or ""), png))
+    return images
+
+
 def face_image_urls(card):
     """Ordered high-resolution PNG URLs to print for one card.
 
@@ -91,25 +102,26 @@ def face_image_urls(card):
     both sides are printed. Single-image cards -- including split, adventure and
     flip, whose faces share one image -- print their one ``image_png``.
     """
-    faces = card.get("card_faces")
-    if isinstance(faces, str):
-        try:
-            faces = json.loads(faces or "[]")
-        except (TypeError, ValueError):
-            faces = []
-    face_urls = []
-    if isinstance(faces, list):
-        for face in faces:
-            if not isinstance(face, dict):
-                continue
-            image_uris = face.get("image_uris")
-            png = image_uris.get("png") if isinstance(image_uris, dict) else None
-            if png:
-                face_urls.append(png)
-    if len(face_urls) >= 2:
-        return face_urls
+    images = _face_images(card)
+    if len(images) >= 2:
+        return [url for _name, url in images]
     single = card.get("image_png")
     return [single] if single else []
+
+
+def back_faces(card):
+    """``(face index, face name)`` for each turned-over face with its own image.
+
+    Only a card with an image per face has one: transform, modal double-faced,
+    battle and reversible cards. Split, adventure and flip cards share a single
+    picture and return nothing. The index matches `face_image_urls` and
+    `ensure_face_png`, so a face is fetched by the same number it is listed by.
+    """
+    images = _face_images(card)
+    if len(images) < 2:
+        return []
+    return [(index, name) for index, (name, _url) in enumerate(images)
+            if index >= 1 and name]
 
 
 def expand_faces(cards):
@@ -210,6 +222,23 @@ def ensure_png(card, cache_dir, http=net, cancel_event=None):
     return _download_png(
         card.get("image_png"), cached_png_path(card, cache_dir),
         card.get("name", "this card"), http=http, cancel_event=cancel_event)
+
+
+def ensure_face_png(card, face_index, cache_dir, http=net, cancel_event=None):
+    """Return a validated PNG for one face of a card with an image per face.
+
+    Uses the same per-face cache path the proxy print flow does, so a face one
+    of them has already downloaded is never fetched again by the other.
+    """
+    images = _face_images(card)
+    name, url = images[face_index]
+    os.makedirs(cache_dir, exist_ok=True)
+    front_path = cached_png_path(card, cache_dir)
+    path = front_path if face_index == 0 else _face_cache_path(
+        front_path, face_index)
+    return _download_png(
+        url, path, name or card.get("name", "this card"), http=http,
+        cancel_event=cancel_event)
 
 
 class PrintTemplateService:

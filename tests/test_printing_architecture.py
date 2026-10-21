@@ -17,7 +17,8 @@ from mtgdb.deck.model import Deck
 from mtgdb.printing.renderer import CARDS_PER_PAGE, page_count
 from mtgdb.printing.service import (
     PrintCancelled, PrintController, PrintJob, PrintResult,
-    PrintTemplateService, cached_png_path, expand_faces, face_image_urls,
+    PrintTemplateService, back_faces, cached_png_path, ensure_face_png,
+    expand_faces, face_image_urls,
 )
 import mtgdb.printing.service as print_template
 
@@ -142,7 +143,38 @@ def main():
         dfc_result = PrintTemplateService(http=dfc_http).create(
             PrintJob.from_deck(dfc_deck, dfc_output, cache_dir))
 
+        # The Arena export asks which faces turn over and fetches one by index.
+        # The same card with its faces named, as stored card data always has.
+        named_dfc = dict(dfc_card, card_faces=[
+            {"name": "Two Sides", "image_uris": {"png": "https://image/front"}},
+            {"name": "Reverse Side",
+             "image_uris": {"png": "https://image/back"}},
+        ])
+        flip_card = dict(adventure_card, id="flip-1", card_faces=[
+            {"name": "Flipper"}, {"name": "Flopper"}])
+        face_http = FakeHttp()
+        # The print run above already cached this card's back face, so asking
+        # for it again must reuse that file and download nothing.
+        reused_face = Path(ensure_face_png(
+            named_dfc, 1, cache_dir, http=face_http))
+        fresh_http = FakeHttp()
+        fresh_face = Path(ensure_face_png(
+            dict(named_dfc, id="dfc-2"), 1, cache_dir, http=fresh_http))
+
         functional = {
+            "Arena back faces come from the print flow's face handling and cache": (
+                back_faces(named_dfc) == [(1, "Reverse Side")]
+                # One picture, however many halves: nothing turns over.
+                and back_faces(adventure_card) == []
+                and back_faces(flip_card) == []
+                and back_faces({"name": "Plain", "image_png": "x"}) == []
+                and reused_face.name.endswith(".face1.png")
+                and reused_face.is_file()
+                and face_http.downloads == []
+                # An uncached face is fetched once, from its own URL.
+                and fresh_http.downloads == ["https://image/back"]
+                and fresh_face != reused_face
+                and fresh_face.read_bytes().startswith(b"\x89PNG")),
             "double-faced card prints both faces; single-image multiface prints once": (
                 face_image_urls(dfc_card)
                 == ["https://image/front", "https://image/back"]

@@ -16,6 +16,11 @@ only characters a filesystem refuses are removed. That index is keyed by name
 alone, which means two printings of one name would collide in it, so this
 bundles ONE image per distinct card name rather than per printing.
 
+A card that turns over (transform, modal double-faced, battle) also bundles its
+back face, filed under that face's own name in the same shape, because Arena
+maps an image to a face by that face's name and draws a transformed permanent
+from it. Split, adventure and flip cards are one picture and add nothing.
+
 The PNGs come from `printing/service.py`, which already downloads, validates,
 caches and atomically replaces Scryfall's high-quality PNG per exact printing,
 including a separate image per face of a double-faced card. Nothing here
@@ -79,6 +84,8 @@ class ArenaExportResult:
     image_count: int
     card_count: int
     missing_art: tuple[str, ...]
+    # How many of ``image_count`` are the back faces of cards that turn over.
+    back_face_count: int = 0
 
 
 def front_face_name(name):
@@ -176,36 +183,60 @@ def _safe_member(name):
     return cleaned or "Deck"
 
 
-def build_export(job, ensure_image, progress_cb=None, cancel_event=None):
+def build_export(
+        job, ensure_image, progress_cb=None, cancel_event=None,
+        back_faces_of=None, ensure_face=None):
     """Download each card's art, then write the bundle.
 
     `ensure_image` is injected rather than imported so this module states what
     it needs -- a validated local PNG for one card -- without owning the
     download, the cache, or the HTTP policy, all of which belong to
-    `printing/service.py`.
+    `printing/service.py`. Back faces are the same: `back_faces_of(card)` names
+    each turned-over face as ``(face index, face name)`` and
+    `ensure_face(card, face_index, cache_dir)` fetches it, so which cards turn
+    over and where a face's image lives stay with the owner of face handling.
+    Without both, only front faces are bundled.
     """
-    total = len(job.cards)
+    # One unit per image: each card's front, then its back faces. A back face
+    # is filed under its own name but carries the front's set code.
+    units = []
+    for card in job.cards:
+        units.append((card, None, card))
+        if back_faces_of and ensure_face:
+            for face_index, face_name in back_faces_of(card):
+                units.append((card, face_index, {
+                    "name": face_name, "set_code": card.get("set_code")}))
+    total = len(units)
     image_paths = {}
     missing = []
-    for index, card in enumerate(job.cards, 1):
+    back_faces = 0
+    for index, (card, face_index, art_card) in enumerate(units, 1):
         check_cancel(
             cancel_event, "Export was cancelled.", ArenaExportCancelled)
-        member_name = art_filename(card)
+        member_name = art_filename(art_card)
         if progress_cb:
             progress_cb("download", index - 1, total, member_name or "")
         path = None
         if member_name:
             try:
-                path = ensure_image(card, job.cache_dir)
+                path = (
+                    ensure_image(card, job.cache_dir) if face_index is None
+                    else ensure_face(card, face_index, job.cache_dir))
             except Exception:
                 path = None
+        member = f"{REAL_ART_DIRECTORY}/{member_name}"
         if path and os.path.exists(path):
-            image_paths[f"{REAL_ART_DIRECTORY}/{member_name}"] = path
+            # A name already filed keeps its first image: Arena's index is
+            # keyed by name, so a second one could only overwrite it.
+            if member not in image_paths:
+                image_paths[member] = path
+                if face_index is not None:
+                    back_faces += 1
         else:
             # A card whose art cannot be fetched MUST NOT fail the export: the
             # decklist is still worth having, and Arena falls back to its
             # generated art for exactly this case.
-            missing.append(front_face_name(card.get("name")) or "(unnamed)")
+            missing.append(front_face_name(art_card.get("name")) or "(unnamed)")
         if progress_cb:
             progress_cb("download", index, total, member_name or "")
 
@@ -213,5 +244,6 @@ def build_export(job, ensure_image, progress_cb=None, cancel_event=None):
         progress_cb("package", total, total, os.path.basename(job.output_path))
     written = write_export(job, image_paths, cancel_event=cancel_event)
     return ArenaExportResult(
-        output_path=job.output_path, image_count=written, card_count=total,
-        missing_art=tuple(missing))
+        output_path=job.output_path, image_count=written,
+        card_count=len(job.cards), missing_art=tuple(missing),
+        back_face_count=back_faces)

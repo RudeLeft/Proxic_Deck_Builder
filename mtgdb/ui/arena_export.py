@@ -7,8 +7,9 @@ boundary break inside `ui/deck_files.py` (LAYER-006).
 
 It owns no file format and no name rule: the zip layout and Arena's art naming
 belong to `arena/export.py`, the playable-name comparison to
-`deck/arena_support.py`, the size and copy limits to `deck/arena_limits.py`,
-and the PNG download, cache and HTTP policy to `printing/service.py`.
+`deck/arena_support.py`, the size and copy limits to `deck/arena_limits.py`, the
+tokens a deck can create to `deck/arena_tokens.py`, and the PNG download, cache,
+face handling and HTTP policy to `printing/service.py`.
 """
 
 import logging
@@ -25,9 +26,10 @@ from mtgdb.deck.arena_limits import (
 from mtgdb.deck.arena_support import (
     load_supported_names, unsupported_deck_names,
 )
+from mtgdb.deck.arena_tokens import deck_tokens
 from mtgdb.deck.file_jobs import submit_deck_file_job
 from mtgdb.deck.io import deck_to_text
-from mtgdb.printing.service import ensure_png
+from mtgdb.printing.service import back_faces, ensure_face_png, ensure_png
 from mtgdb.ui.assets import ARENA_SUPPORTED_CARDS_FILE, _asset_path
 from mtgdb.ui.components import AppButton, autohide_scrollbar
 from mtgdb.ui.tokens import FONT_BODY, PALETTE
@@ -47,6 +49,14 @@ ARENA_LIMIT_LEAD = (
     "copies of any card (basic lands and cards that allow any number of "
     "copies are exempt).")
 ARENA_LIMIT_CLOSING = "Nothing was exported. Adjust the deck and try again."
+# Legendary cards named inline before the rest are counted: the warning is a
+# paragraph in the report, not a list, so it is kept short.
+ARENA_LEGENDARY_NAME_LIMIT = 6
+ARENA_TOKEN_INTRO = (
+    "These cards in your deck can create tokens. Tokens are not included in "
+    "the export, so add card art for them yourself if you want it:")
+# Deck cards named against each token before the rest are counted.
+ARENA_TOKEN_MAKER_LIMIT = 3
 
 
 def arena_limit_text(limits):
@@ -83,6 +93,65 @@ def arena_sideboard_note(count):
     return (
         "Sideboard cards are not included in a Proxic Arena export. This "
         f"deck's sideboard ({count} {noun}) was left out.")
+
+
+def arena_legendary_note(repeats):
+    """Return the warning about legendary cards held more than once, or "".
+
+    A deck may hold several copies, so this warns and never refuses. Each card
+    is named with its copy count, capped with the remainder counted rather than
+    dropped. An empty string means no legendary permanent repeats, and the
+    report says nothing about the legend rule at all.
+    """
+    if not repeats:
+        return ""
+    named = [
+        f"{name} ({copies} copies)"
+        for name, copies in repeats[:ARENA_LEGENDARY_NAME_LIMIT]]
+    remaining = len(repeats) - len(named)
+    if remaining:
+        named.append(f"and {remaining} more")
+    return (
+        "Heads up: you can only control one legendary permanent with a given "
+        "name at a time. If you play a second copy, Proxic Arena will ask you "
+        "to discard one. Your deck has more than one of: "
+        + "; ".join(named) + ".")
+
+
+def arena_back_face_phrase(count):
+    """Return ``, including N back face(s)`` for the written line, or "".
+
+    A card that turns over ships two images, so the image count runs past the
+    card count; this says why rather than leaving the numbers to look wrong.
+    """
+    if count <= 0:
+        return ""
+    noun = "back face" if count == 1 else "back faces"
+    return f", including {count} {noun}"
+
+
+def arena_token_section(tokens):
+    """Return ``(intro, lines, remaining)`` for the tokens a deck can create.
+
+    An empty tuple means no card in the deck makes a token, and the report says
+    nothing about tokens at all. Tokens are not in the export, so the intro says
+    so and asks the player to add their art; each line names the token, its type
+    line, and the deck cards that can make it, capped with the remainder counted
+    rather than dropped.
+    """
+    if not tokens:
+        return ()
+    lines = []
+    for token in tokens:
+        makers = list(token.makers[:ARENA_TOKEN_MAKER_LIMIT])
+        extra = len(token.makers) - len(makers)
+        if extra:
+            makers.append(f"and {extra} more")
+        label = (f"{token.name} ({token.type_line})" if token.type_line
+                 else token.name)
+        lines.append(f"{label}, from {', '.join(makers)}")
+    shown = lines[:ARENA_WARNING_NAME_LIMIT]
+    return (ARENA_TOKEN_INTRO, shown, len(lines) - len(shown))
 
 
 def arena_warning_text(unsupported):
@@ -145,6 +214,8 @@ class ArenaExportMixin:
             return
 
         sideboard_count = detached.total("side")
+        legendary_repeats = limits.legendary_repeats
+        tokens = deck_tokens(detached)
         job = ArenaExportJob.from_deck(
             detached, deck_to_text(detached, include_side=False), path,
             os.path.join(self.image_cache_dir, "print_png"))
@@ -162,7 +233,8 @@ class ArenaExportMixin:
                 detached, supported, boards=("main",))
             result = build_export(
                 job, ensure_png, progress_cb=report,
-                cancel_event=cancel_event)
+                cancel_event=cancel_event, back_faces_of=back_faces,
+                ensure_face=ensure_face_png)
             return result, unsupported
 
         def exported(outcome):
@@ -173,7 +245,9 @@ class ArenaExportMixin:
                 " %d unplayable", result.output_path, result.image_count,
                 result.card_count, len(result.missing_art), len(unsupported))
             self._status(f"Exported {os.path.basename(result.output_path)}")
-            self._report_arena_export(result, unsupported, sideboard_count)
+            self._report_arena_export(
+                result, unsupported, sideboard_count, legendary_repeats,
+                tokens)
 
         self._status("Exporting for Proxic Arena\u2026")
         popup = self._show_arena_export_progress(len(job.cards), cancel_event)
@@ -269,19 +343,24 @@ class ArenaExportMixin:
                 pass
 
 
-    def _report_arena_export(self, result, unsupported, sideboard_count=0):
+    def _report_arena_export(
+            self, result, unsupported, sideboard_count=0,
+            legendary_repeats=(), tokens=()):
         """Report what the bundle holds, and what Arena still cannot play.
 
-        One dialog rather than two: the write, the playability answer and the
-        note that the sideboard was left out belong to the same action, and a
-        second popup to dismiss is not news.
+        One dialog rather than two: the write, the playability answer, the note
+        that the sideboard was left out, the legend-rule warning and the tokens
+        the deck can create belong to the same action, and a second popup to
+        dismiss is not news.
         """
         written = (
             f"Wrote {os.path.basename(result.output_path)}: "
-            f"{result.image_count} card images for {result.card_count} cards.")
-        sideboard_note = arena_sideboard_note(sideboard_count)
-        if sideboard_note:
-            written = f"{written}\n\n{sideboard_note}"
+            f"{result.image_count} card images for {result.card_count} cards"
+            f"{arena_back_face_phrase(result.back_face_count)}.")
+        for note in (arena_sideboard_note(sideboard_count),
+                     arena_legendary_note(legendary_repeats)):
+            if note:
+                written = f"{written}\n\n{note}"
         if unsupported:
             lead, shown, remaining, closing = arena_warning_text(unsupported)
             lead = f"{written}\n\n{lead}"
@@ -293,10 +372,46 @@ class ArenaExportMixin:
                 f"{closing}\n\nNo art could be downloaded for "
                 f"{len(result.missing_art)} card(s); Proxic Arena draws its "
                 "own for those.")
-        self._show_arena_list_dialog(lead, shown, remaining, closing)
+        token_section = arena_token_section(tokens)
+        self._show_arena_list_dialog(
+            lead, shown, remaining, closing,
+            sections=[token_section] if token_section else [])
 
 
-    def _show_arena_list_dialog(self, lead, shown, remaining, closing):
+    def _build_arena_list(self, shell, shown, remaining, max_rows):
+        """Draw one bordered dark list whose scrollbar appears only on overflow."""
+        p = PALETTE
+        list_shell = tk.Frame(
+            shell, bg=p["border"], highlightthickness=1,
+            highlightbackground=p["border"])
+        list_shell.pack(fill="both", expand=True)
+        list_shell.rowconfigure(0, weight=1)
+        list_shell.columnconfigure(0, weight=1)
+
+        names = tk.Listbox(
+            list_shell, activestyle="none", exportselection=False,
+            background=p["input"], foreground=p["text"],
+            selectbackground=p["accent"],
+            selectforeground=p["on_accent"],
+            highlightthickness=0, relief="flat", bd=0,
+            height=min(max(len(shown), 3), max_rows),
+            font=FONT_BODY)
+        scroll = ttk.Scrollbar(
+            list_shell, orient="vertical", command=names.yview,
+            style="Dark.Vertical.TScrollbar")
+        names.configure(yscrollcommand=autohide_scrollbar(scroll))
+        names.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        self._register_scrollable(names)
+
+        for name in shown:
+            names.insert("end", f"  {name}")
+        if remaining:
+            # Counted rather than dropped silently.
+            names.insert("end", f"  +{remaining} more")
+
+    def _show_arena_list_dialog(
+            self, lead, shown, remaining, closing, sections=()):
         """Present an Arena notice as an app-owned dark dialog, not a native one.
 
         A native `messagebox` paints the host platform's own grey chrome and
@@ -305,7 +420,9 @@ class ArenaExportMixin:
         Format Check dialog: one gold `DialogTitle.TLabel`, a bordered dark
         list whose scrollbar appears only when it overflows (UI-016), and a
         single compact secondary `Close` (UI-012). With nothing to list the
-        list is omitted rather than drawn empty.
+        list is omitted rather than drawn empty. Each ``(intro, lines,
+        remaining)`` in ``sections`` adds a further labelled list after the
+        closing sentence, shorter so two lists fit a small screen.
         """
         p = PALETTE
         popup = self._create_hidden_popup(
@@ -327,41 +444,22 @@ class ArenaExportMixin:
             justify="left", anchor="w", wraplength=520
         ).pack(anchor="w", fill="x", pady=(0, 10))
 
+        list_rows = 8 if sections else 12
         if shown:
-            list_shell = tk.Frame(
-                shell, bg=p["border"], highlightthickness=1,
-                highlightbackground=p["border"])
-            list_shell.pack(fill="both", expand=True)
-            list_shell.rowconfigure(0, weight=1)
-            list_shell.columnconfigure(0, weight=1)
-
-            names = tk.Listbox(
-                list_shell, activestyle="none", exportselection=False,
-                background=p["input"], foreground=p["text"],
-                selectbackground=p["accent"],
-                selectforeground=p["on_accent"],
-                highlightthickness=0, relief="flat", bd=0,
-                height=min(max(len(shown), 3), 12),
-                font=FONT_BODY)
-            scroll = ttk.Scrollbar(
-                list_shell, orient="vertical", command=names.yview,
-                style="Dark.Vertical.TScrollbar")
-            names.configure(yscrollcommand=autohide_scrollbar(scroll))
-            names.grid(row=0, column=0, sticky="nsew")
-            scroll.grid(row=0, column=1, sticky="ns")
-            self._register_scrollable(names)
-
-            for name in shown:
-                names.insert("end", f"  {name}")
-            if remaining:
-                # Counted rather than dropped silently.
-                names.insert("end", f"  +{remaining} more")
+            self._build_arena_list(shell, shown, remaining, list_rows)
 
         if closing:
             tk.Label(
                 shell, text=closing, bg=p["surface"], fg=p["text"],
                 font=FONT_BODY, justify="left", anchor="w", wraplength=520
             ).pack(anchor="w", fill="x", pady=(10, 0))
+
+        for intro, lines, more in sections:
+            tk.Label(
+                shell, text=intro, bg=p["surface"], fg=p["text"],
+                font=FONT_BODY, justify="left", anchor="w", wraplength=520
+            ).pack(anchor="w", fill="x", pady=(10, 6))
+            self._build_arena_list(shell, lines, more, list_rows)
 
         foot = tk.Frame(shell, bg=p["surface"])
         foot.pack(fill="x", pady=(12, 0))

@@ -19,6 +19,7 @@ from mtgdb.arena.export import (
 from mtgdb.core.background_jobs import JobCancelled
 from mtgdb.deck.io import deck_to_text
 from mtgdb.deck.model import Deck
+from mtgdb.printing.service import back_faces
 
 # A minimal valid-looking PNG header. These tests never reach the network:
 # the downloader is injected (ARN-003), so the stub stands in for it.
@@ -44,6 +45,111 @@ def _stub_downloader(calls=None):
         path.write_bytes(_PNG_BYTES)
         return str(path)
     return ensure
+
+
+def _two_faced(identifier, front, back, set_code, layout="transform"):
+    """A card with its own image on each face, shaped like stored card data."""
+    return {
+        "id": identifier, "name": f"{front} // {back}", "set_code": set_code,
+        "collector_number": "1", "layout": layout,
+        "image_png": f"https://example/{identifier}-front.png",
+        "card_faces": [
+            {"name": front, "image_uris": {
+                "png": f"https://example/{identifier}-front.png"}},
+            {"name": back, "image_uris": {
+                "png": f"https://example/{identifier}-back.png"}},
+        ],
+    }
+
+
+def _stub_face_downloader(calls=None, fail=()):
+    """Stand in for printing.service.ensure_face_png without a network."""
+    def ensure(card, face_index, cache_dir):
+        if calls is not None:
+            calls.append((card.get("id"), face_index))
+        if (card.get("id"), face_index) in fail:
+            raise OSError("no art for this face")
+        path = pathlib.Path(cache_dir) / f"{card['id']}.face{face_index}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_PNG_BYTES)
+        return str(path)
+    return ensure
+
+
+def _back_face_check():
+    """ARN-002/ARN-003: a card that turns over also bundles its back face."""
+    delver = _two_faced(
+        "d1", "Delver of Secrets", "Insectile Aberration", "isd")
+    valki = _two_faced(
+        "m1", "Valki, God of Lies", "Tibalt, Cosmic Impostor", "khm",
+        layout="modal_dfc")
+    # One picture for both halves: nothing turns over.
+    giant = {
+        "id": "g1", "name": "Bonecrusher Giant // Stomp", "set_code": "eld",
+        "collector_number": "1", "image_png": "https://example/g1.png",
+        "card_faces": [{"name": "Bonecrusher Giant"}, {"name": "Stomp"}]}
+    deck = Deck("Faces", "modern")
+    deck.add(delver, "main", 2)
+    deck.add(valki, "main", 1)
+    deck.add(giant, "main", 1)
+    deck.add(_card("b", "Lightning Bolt", "lea"), "main", 4)
+    # The sideboard is not exported, so neither is its back face.
+    deck.add(_two_faced("s1", "Side Front", "Side Back", "sss"), "side", 1)
+
+    def export(base, name, ensure_face, inject=True):
+        output = base / f"{name}.zip"
+        job = ArenaExportJob.from_deck(
+            deck, deck_to_text(deck, include_side=False), output,
+            base / "cache")
+        events = []
+        extra = (
+            {"back_faces_of": back_faces, "ensure_face": ensure_face}
+            if inject else {})
+        result = build_export(
+            job, _stub_downloader(),
+            progress_cb=lambda *args: events.append(args), **extra)
+        with zipfile.ZipFile(output) as archive:
+            members = sorted(archive.namelist())
+            # Named after the deck, not the archive, whatever it was saved as.
+            decklist = archive.read("Faces.txt").decode("utf-8")
+        return result, members, decklist, events
+
+    with tempfile.TemporaryDirectory() as directory:
+        base = pathlib.Path(directory)
+        calls = []
+        result, members, decklist, events = export(
+            base, "Faces", _stub_face_downloader(calls))
+        failed, failed_members, _text, _events = export(
+            base, "Failing", _stub_face_downloader(
+                fail={("d1", 1)}))
+        bare, bare_members, _text, _events = export(
+            base, "Fronts", None, inject=False)
+
+    art = [m for m in members if m.startswith(f"{REAL_ART_DIRECTORY}/")]
+    return (
+        # Each face under its own name, the back with the front's set code.
+        art == sorted([
+            f"{REAL_ART_DIRECTORY}/Delver of Secrets [ISD].png",
+            f"{REAL_ART_DIRECTORY}/Insectile Aberration [ISD].png",
+            f"{REAL_ART_DIRECTORY}/Valki, God of Lies [KHM].png",
+            f"{REAL_ART_DIRECTORY}/Tibalt, Cosmic Impostor [KHM].png",
+            f"{REAL_ART_DIRECTORY}/Bonecrusher Giant [ELD].png",
+            f"{REAL_ART_DIRECTORY}/Lightning Bolt [LEA].png"])
+        and result.image_count == 6 and result.card_count == 4
+        and result.back_face_count == 2 and result.missing_art == ()
+        # One download per back face, however many copies are in the deck.
+        and sorted(calls) == [("d1", 1), ("m1", 1)]
+        # The decklist still names a double-faced card by both faces.
+        and "Delver of Secrets // Insectile Aberration" in decklist
+        and "Side Front" not in decklist
+        # Progress counts every image, then the packaging step.
+        and events[-1] == ("package", 6, 6, "Faces.zip")
+        # A back face that cannot be fetched is reported, and the rest ships.
+        and failed.missing_art == ("Insectile Aberration",)
+        and failed.back_face_count == 1 and failed.image_count == 5
+        and f"{REAL_ART_DIRECTORY}/Delver of Secrets [ISD].png" in failed_members
+        # Without the two injected functions, only fronts are bundled.
+        and bare.image_count == 4 and bare.back_face_count == 0)
 
 
 def _arena_index_key(filename):
@@ -355,6 +461,96 @@ def _arena_sideboard_sentence_check():
         and arena_sideboard_note(15).endswith("(15 cards) was left out."))
 
 
+def _arena_legendary_note_check():
+    """ARN-009: the legend-rule warning, composed apart from its widgets."""
+    from mtgdb.ui.arena_export import (
+        ARENA_LEGENDARY_NAME_LIMIT, arena_legendary_note,
+    )
+
+    one = arena_legendary_note((("Krenko, Mob Boss", 2),))
+    two = arena_legendary_note((
+        ("Krenko, Mob Boss", 2), ("Ragavan, Nimble Pilferer", 4)))
+    crowd = tuple(
+        (f"Legend {index}", 2) for index in range(ARENA_LEGENDARY_NAME_LIMIT + 3))
+    long_note = arena_legendary_note(crowd)
+    source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
+    report = source.split("def _report_arena_export")[1].split("\n    def ")[0]
+    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    return (
+        # Nothing repeats, nothing is said about the legend rule.
+        arena_legendary_note(()) == ""
+        # The rule, what Arena does, and each card with its copy count.
+        and one == (
+            "Heads up: you can only control one legendary permanent with a "
+            "given name at a time. If you play a second copy, Proxic Arena "
+            "will ask you to discard one. Your deck has more than one of: "
+            "Krenko, Mob Boss (2 copies).")
+        and two.endswith(
+            "Krenko, Mob Boss (2 copies); Ragavan, Nimble Pilferer (4 copies).")
+        # The listing is capped and the remainder counted, not dropped.
+        and long_note.endswith("; and 3 more.")
+        and long_note.count("copies)") == ARENA_LEGENDARY_NAME_LIMIT
+        # It rides in the one report dialog, and never blocks the export.
+        and "arena_legendary_note(" in report
+        and "limits.legendary_repeats" in body
+        and "if not limits.allowed:" in body
+        and "legendary" not in body.split("if not limits.allowed:")[1].split(
+            "return")[0])
+
+
+def _arena_token_notice_check():
+    """ARN-002/ARN-010: token and back-face wording, composed apart from widgets."""
+    from mtgdb.deck.arena_tokens import ArenaToken
+    from mtgdb.ui.arena_export import (
+        ARENA_WARNING_NAME_LIMIT, arena_back_face_phrase, arena_token_section,
+    )
+
+    goblin = ArenaToken(
+        "Goblin", "Token Creature — Goblin", ("Hordeling Outburst",))
+    treasure = ArenaToken(
+        "Treasure", "Token Artifact — Treasure", ("A", "B", "C", "D", "E"))
+    mystery = ArenaToken("Mystery", "", ("Some Card",))
+    crowd = tuple(
+        ArenaToken(f"Token {index}", "Token Creature — Thing", ("Maker",))
+        for index in range(ARENA_WARNING_NAME_LIMIT + 4))
+    intro, lines, rest = arena_token_section((goblin,))
+    crowded = arena_token_section(crowd)
+    source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
+    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    report = source.split("def _report_arena_export")[1].split("\n    def ")[0]
+    return (
+        # No token, no mention of tokens at all.
+        arena_token_section(()) == ()
+        # Plain words: not in the export, and the player can add the art.
+        and "can create tokens" in intro
+        and "not included in the export" in intro
+        and "add card art for them yourself" in intro
+        and lines == [
+            "Goblin (Token Creature — Goblin), from Hordeling Outburst"]
+        and rest == 0
+        # The makers are capped with the remainder counted, not dropped.
+        and arena_token_section((treasure,))[1] == [
+            "Treasure (Token Artifact — Treasure), from A, B, C, and 2 more"]
+        # A token with no type line still reads cleanly.
+        and arena_token_section((mystery,))[1] == ["Mystery, from Some Card"]
+        # The list is capped and the remainder counted.
+        and len(crowded[1]) == ARENA_WARNING_NAME_LIMIT and crowded[2] == 4
+        # An image count past the card count says why.
+        and arena_back_face_phrase(0) == ""
+        and arena_back_face_phrase(1) == ", including 1 back face"
+        and arena_back_face_phrase(3) == ", including 3 back faces"
+        # Wired: found on the snapshot, shown in the one report, fetched through
+        # the printing owner's face functions, and never a reason to refuse.
+        and "tokens = deck_tokens(detached)" in body
+        and "back_faces_of=back_faces" in body
+        and "ensure_face=ensure_face_png" in body
+        and "arena_token_section(" in report
+        and "sections=" in report
+        and "arena_back_face_phrase(" in report
+        and "token" not in body.split("if not limits.allowed:")[1].split(
+            "return")[0])
+
+
 def _arena_limit_sentences_check():
     """ARN-007: the refusal's sentences, composed apart from its widgets."""
     from mtgdb.deck.arena_limits import ArenaDeckLimits
@@ -373,6 +569,9 @@ def _arena_limit_sentences_check():
     return (
         # The limits are named in the lead, whichever one was broken.
         "65 cards" in lead and "4 copies" in lead
+        # A legendary card may repeat, so the refusal never mentions the legend
+        # rule: that is a warning in the report, not a reason to refuse.
+        and "legendary" not in lead.lower()
         and shown == [
             "Deck size: 72 cards, 7 over the 65-card limit",
             "Lightning Bolt: 6 copies, 2 over the limit of 4"]
@@ -407,6 +606,12 @@ def main():
             _sideboard_exclusion_check(),
         "the user is told how many sideboard cards were left out":
             _arena_sideboard_sentence_check(),
+        "repeated legendary cards are warned about, never refused":
+            _arena_legendary_note_check(),
+        "a card that turns over also bundles its back face":
+            _back_face_check(),
+        "tokens a deck can create are listed in plain words, never refused":
+            _arena_token_notice_check(),
     }
     ok = True
     for label, passed in checks.items():

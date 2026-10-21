@@ -36,6 +36,7 @@ from mtgdb.deck.arena_support import (
 from mtgdb.deck.arena_limits import (
     ARENA_COPY_LIMIT, ARENA_MAX_CARDS, arena_deck_limits,
 )
+from mtgdb.deck.arena_tokens import deck_tokens
 
 
 def _card(card_id, name, *, oracle_id=None, type_line="Creature",
@@ -432,6 +433,60 @@ def _arena_limits_check():
     nameless.add(_card("blank", ""), "main", 9)
     nameless_limits = arena_deck_limits(nameless)
 
+    def legend(card_id, name, type_line, set_code="tst"):
+        return _card(card_id, name, type_line=type_line, set_code=set_code)
+
+    mob_boss = "Krenko, Mob Boss"
+    goblin = "Legendary Creature — Goblin Warrior"
+
+    # One of each legendary name is fine, however many different ones.
+    legend_ok = Deck("Legend OK", "modern")
+    legend_ok.add(legend("k1", mob_boss, goblin), "main", 1)
+    legend_ok.add(legend("k2", "Krenko, Tin Street Kingpin", goblin), "main", 1)
+    legend_ok_limits = arena_deck_limits(legend_ok)
+
+    # Two of one name is allowed, and reported: playing a second Krenko makes
+    # the player discard one, which is worth a warning and not a refusal.
+    legend_two = Deck("Legend Two", "modern")
+    legend_two.add(legend("k1", mob_boss, goblin), "main", 2)
+    legend_two_limits = arena_deck_limits(legend_two)
+
+    # Two printings of one name are one name to the legend rule.
+    legend_printings = Deck("Legend Printings", "modern")
+    legend_printings.add(legend("k1", mob_boss, goblin, "m20"), "main", 1)
+    legend_printings.add(legend("k2", mob_boss, goblin, "ima"), "main", 1)
+    legend_printings_limits = arena_deck_limits(legend_printings)
+
+    # A legendary card is still held to the ordinary four.
+    legend_five = Deck("Legend Five", "modern")
+    legend_five.add(legend("k1", mob_boss, goblin), "main", 5)
+    legend_five_limits = arena_deck_limits(legend_five)
+
+    # The sideboard is not exported, so its copies are not in play.
+    legend_side = Deck("Legend Side", "modern")
+    legend_side.add(legend("k1", mob_boss, goblin), "main", 1)
+    legend_side.add(legend("k1", mob_boss, goblin), "side", 3)
+    legend_side_limits = arena_deck_limits(legend_side)
+
+    # A legendary spell is not a permanent, so the legend rule never applies.
+    spell = legend("arc", "Legendary Spell", "Legendary Sorcery — Arcane")
+    spell_four = Deck("Spell Four", "modern")
+    spell_four.add(spell, "main", 4)
+    spell_four_limits = arena_deck_limits(spell_four)
+
+    land = legend("land", "Legend Land", "Legendary Land")
+    land_two = Deck("Land Two", "modern")
+    land_two.add(land, "main", 2)
+    land_two_limits = arena_deck_limits(land_two)
+
+    # Legendary on the back face alone still meets the rule once it transforms.
+    back = legend(
+        "back", "Hunter // Beast",
+        "Creature — Human // Legendary Creature — Werewolf")
+    back_two = Deck("Back Two", "modern")
+    back_two.add(back, "main", 2)
+    back_two_limits = arena_deck_limits(back_two)
+
     return (
         ARENA_MAX_CARDS == 65
         and ARENA_COPY_LIMIT == 4
@@ -451,6 +506,25 @@ def _arena_limits_check():
         and exempt_limits.allowed
         # The card's own cap applies, not the generic four.
         and capped_limits.over_copy_limit == (("Seven Dwarves", 8, 7),)
+        # Legendary permanents may repeat: allowed, and reported by name.
+        and legend_ok_limits.allowed and legend_ok_limits.legendary_repeats == ()
+        and legend_two_limits.allowed
+        and legend_two_limits.legendary_repeats == ((mob_boss, 2),)
+        # Two printings are one name to the legend rule.
+        and legend_printings_limits.allowed
+        and legend_printings_limits.legendary_repeats == ((mob_boss, 2),)
+        # Five is refused by the ordinary four, not by anything legendary.
+        and legend_five_limits.over_copy_limit == ((mob_boss, 5, 4),)
+        and not legend_five_limits.allowed
+        # The sideboard is not exported, so its copies are never in play.
+        and legend_side_limits.allowed and legend_side_limits.legendary_repeats == ()
+        # A legendary instant or sorcery never enters play: not listed.
+        and spell_four_limits.allowed and spell_four_limits.legendary_repeats == ()
+        # A land is a permanent, and a back face counts once it transforms.
+        and land_two_limits.legendary_repeats == (("Legend Land", 2),)
+        and back_two_limits.legendary_repeats == (("Hunter // Beast", 2),)
+        # Plain cards and basic lands never read as legendary repeats.
+        and five_limits.legendary_repeats == () and exact.legendary_repeats == ()
         # A nameless entry counts toward size and cannot be listed as a card.
         and nameless_limits.total_cards == 9 and nameless_limits.allowed)
 
@@ -515,6 +589,69 @@ def _arena_refresh_script_check():
         and "Proxic_Arena" not in source
         # .gitattributes pins LF for this tree, so the asset is written with it.
         and r'newline="\n"' in source)
+
+
+def _arena_tokens_check():
+    """ARN-010: the tokens a deck's cards can create, from their related parts.
+
+    Expectations are written out rather than derived from the function under
+    test (VER-010).
+    """
+    def part(component, name, type_line, identifier="x"):
+        return {"component": component, "name": name,
+                "type_line": type_line, "id": identifier}
+
+    def maker(card_id, name, parts, as_text=True):
+        card = _card(card_id, name)
+        card["related_parts"] = json.dumps(parts) if as_text else parts
+        return card
+
+    goblin = "Token Creature — Goblin"
+    outburst = maker("ho", "Hordeling Outburst", [
+        part("token", "Goblin", goblin, "g1"),
+        part("combo_piece", "Hordeling Outburst", "Sorcery")])
+    # Already-decoded related parts read the same as stored JSON text, and a
+    # second Scryfall Goblin token is the same kind of token.
+    krenko = maker(
+        "kr", "Krenko, Mob Boss", [part("token", "Goblin", goblin, "g2")],
+        as_text=False)
+    elspeth = maker("el", "Elspeth, Sun's Champion", [
+        part("token", "Soldier", "Token Creature — Soldier"),
+        # An emblem is linked as a combo piece, and is not a token.
+        part("combo_piece", "Elspeth, Sun's Champion Emblem",
+             "Emblem — Elspeth")])
+    turns_over = maker("df", "Front Side // Back Side", [
+        part("token", "Clue", "Token Artifact — Clue")])
+    plain = _card("pl", "Lightning Bolt")
+    broken = _card("br", "Broken Parts")
+    broken["related_parts"] = "{not json"
+    sideboard_only = maker("sd", "Sideboard Maker", [
+        part("token", "Zombie", "Token Creature — Zombie")])
+
+    deck = Deck("Tokens", "modern")
+    for card in (outburst, krenko, elspeth, turns_over, plain, broken):
+        deck.add(card, "main", 2)
+    # Another printing of a card already listed is not named twice.
+    deck.add(maker("ho2", "Hordeling Outburst", [
+        part("token", "Goblin", goblin, "g3")]), "main", 1)
+    deck.add(sideboard_only, "side", 3)
+    found = deck_tokens(deck)
+
+    empty = Deck("No Tokens", "modern")
+    empty.add(plain, "main", 4)
+    empty.add(broken, "main", 1)
+    return (
+        # By token name, whatever order the deck lists its cards in.
+        [token.name for token in found] == ["Clue", "Goblin", "Soldier"]
+        # One entry for the Goblin, naming each card able to make it, once.
+        and found[1].makers == ("Hordeling Outburst", "Krenko, Mob Boss")
+        and found[1].type_line == goblin
+        # A card that turns over is named by its front face.
+        and found[0].makers == ("Front Side",)
+        # No emblem, no sideboard token, and unreadable data fails closed.
+        and "Zombie" not in [token.name for token in found]
+        and "Emblem" not in " ".join(token.type_line for token in found)
+        and deck_tokens(empty) == ())
 
 
 def _forge_update_workflow_check():
@@ -799,7 +936,7 @@ def main():
         for name in (
             "mtgdb/deck/model.py", "mtgdb/deck/io.py", "mtgdb/deck/analysis.py",
             "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py",
-            "mtgdb/deck/arena_limits.py",
+            "mtgdb/deck/arena_limits.py", "mtgdb/deck/arena_tokens.py",
             "mtgdb/ui/app.py", "mtgdb/ui/deck.py",
             "mtgdb/ui/deck_files.py", "mtgdb/ui/deck_stats.py")
     }
@@ -953,7 +1090,7 @@ def main():
             for name in (
                 "mtgdb/deck/model.py", "mtgdb/deck/io.py", "mtgdb/deck/analysis.py",
                 "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py",
-                "mtgdb/deck/arena_limits.py")),
+                "mtgdb/deck/arena_limits.py", "mtgdb/deck/arena_tokens.py")),
         "model owns no parser, probability, randomness, or legality imports": (
             not ({"re", "json", "math", "random"} & imports["mtgdb/deck/model.py"])),
         "Arena lookup keys mirror the Proxic Arena name rule":
@@ -968,6 +1105,8 @@ def main():
             _arena_shipped_asset_check(),
         "the Arena name asset has a refresh tool with a safe contract":
             _arena_refresh_script_check(),
+        "the tokens a deck's cards can create are found once each, main deck only":
+            _arena_tokens_check(),
         "a weekly Forge check compares upstream card scripts and only reports":
             _forge_update_workflow_check(),
         "the Arena asset location belongs to the shared asset owner": (
