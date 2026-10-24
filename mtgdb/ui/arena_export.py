@@ -7,9 +7,10 @@ boundary break inside `ui/deck_files.py` (LAYER-006).
 
 It owns no file format and no name rule: the zip layout and Arena's art naming
 belong to `arena/export.py`, the playable-name comparison to
-`deck/arena_support.py`, the size and copy limits to `deck/arena_limits.py`, the
-tokens a deck can create to `deck/arena_tokens.py`, and the PNG download, cache,
-face handling and HTTP policy to `printing/service.py`.
+`deck/arena_support.py`, which printing each card is exported as to
+`deck/arena_printings.py`, the size and copy limits to `deck/arena_limits.py`,
+the tokens a deck can create to `deck/arena_tokens.py`, and the PNG download,
+cache, face handling and HTTP policy to `printing/service.py`.
 """
 
 import logging
@@ -19,12 +20,15 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from mtgdb.arena.export import ArenaExportJob, build_export
+from mtgdb.arena.export import (
+    ArenaExportJob, build_export, distinct_art_cards,
+)
 from mtgdb.deck.arena_limits import (
     ARENA_COPY_LIMIT, ARENA_MAX_CARDS, arena_deck_limits,
 )
+from mtgdb.deck.arena_printings import arena_export_deck
 from mtgdb.deck.arena_support import (
-    load_supported_names, unsupported_deck_names,
+    load_arena_support, unsupported_deck_names,
 )
 from mtgdb.deck.arena_tokens import deck_tokens
 from mtgdb.deck.file_jobs import submit_deck_file_job
@@ -57,6 +61,9 @@ ARENA_TOKEN_INTRO = (
     "the export, so add card art for them yourself if you want it:")
 # Deck cards named against each token before the rest are counted.
 ARENA_TOKEN_MAKER_LIMIT = 3
+ARENA_PRINTING_INTRO = (
+    "Proxic Arena doesn't have these printings, so the export uses one it "
+    "does have. Your saved deck keeps your own printings:")
 
 
 def arena_limit_text(limits):
@@ -154,6 +161,34 @@ def arena_token_section(tokens):
     return (ARENA_TOKEN_INTRO, shown, len(lines) - len(shown))
 
 
+def arena_printing_line(swap):
+    """Return one swap in plain words: ``Island: MDD 294 -> M21 263 (...)``.
+
+    A card exported by name alone says so, because no printing Proxic Arena
+    has could be pictured and Arena picks its own.
+    """
+    before = " ".join(part for part in (swap.from_set, swap.from_number) if part)
+    if not swap.to_set:
+        return (f"{swap.name}: {before} -> listed by name only (Proxic Arena "
+                "picks the printing)")
+    after = " ".join(part for part in (swap.to_set, swap.to_number) if part)
+    return f"{swap.name}: {before} -> {after} (the printing Proxic Arena has)"
+
+
+def arena_printing_section(swaps):
+    """Return ``(intro, lines, remaining)`` for the printings the export changed.
+
+    An empty tuple means every printing was exported as the deck holds it, and
+    the report says nothing about printings at all. Capped with the remainder
+    counted rather than dropped.
+    """
+    if not swaps:
+        return ()
+    lines = [arena_printing_line(swap) for swap in swaps]
+    shown = lines[:ARENA_WARNING_NAME_LIMIT]
+    return (ARENA_PRINTING_INTRO, shown, len(lines) - len(shown))
+
+
 def arena_warning_text(unsupported):
     """Return the notice's lead line, listed names, overflow count, and closing.
 
@@ -178,7 +213,9 @@ class ArenaExportMixin:
         decklist on its own plays through generated art. This writes both as
         one zip -- the decklist, plus `real_cards/<Card Name> [SET].png` for
         every distinct main-deck card -- and reports which cards Arena cannot
-        play. The sideboard is not exported, and the report says so.
+        play. A printing Arena does not have is exported as one it does, and
+        the report lists each; the saved deck keeps its own printings. The
+        sideboard is not exported, and the report says so.
 
         It returns nothing: the bundle is written on a worker, so a value
         returned here could only mean "started", which DUI-020 forbids a
@@ -216,9 +253,8 @@ class ArenaExportMixin:
         sideboard_count = detached.total("side")
         legendary_repeats = limits.legendary_repeats
         tokens = deck_tokens(detached)
-        job = ArenaExportJob.from_deck(
-            detached, deck_to_text(detached, include_side=False), path,
-            os.path.join(self.image_cache_dir, "print_png"))
+        cache_dir = os.path.join(self.image_cache_dir, "print_png")
+        printings_named = self.db.printings_named
         cancel_event = threading.Event()
         # Progress crosses threads through a queue rather than a Tk call from
         # the worker; Tk polls it (BEH-002).
@@ -227,30 +263,39 @@ class ArenaExportMixin:
         def run_export():
             def report(stage, current, total, detail):
                 progress.put((stage, current, total, detail))
-            supported = load_supported_names(
+            support = load_arena_support(
                 _asset_path(ARENA_SUPPORTED_CARDS_FILE))
             unsupported = unsupported_deck_names(
-                detached, supported, boards=("main",))
+                detached, support.names, boards=("main",))
+            # The printings Arena checks are chosen here, on the worker,
+            # because finding a replacement reads the card database.
+            export_deck, swaps = arena_export_deck(
+                detached, support, printings_named)
+            job = ArenaExportJob.from_deck(
+                export_deck, deck_to_text(export_deck, include_side=False),
+                path, cache_dir)
             result = build_export(
                 job, ensure_png, progress_cb=report,
                 cancel_event=cancel_event, back_faces_of=back_faces,
                 ensure_face=ensure_face_png)
-            return result, unsupported
+            return result, unsupported, swaps
 
         def exported(outcome):
             self._close_arena_export_progress()
-            result, unsupported = outcome
+            result, unsupported, swaps = outcome
             log.info(
                 "Arena export wrote %s: %d images for %d cards, %d without art,"
-                " %d unplayable", result.output_path, result.image_count,
-                result.card_count, len(result.missing_art), len(unsupported))
+                " %d unplayable, %d printings changed", result.output_path,
+                result.image_count, result.card_count,
+                len(result.missing_art), len(unsupported), len(swaps))
             self._status(f"Exported {os.path.basename(result.output_path)}")
             self._report_arena_export(
                 result, unsupported, sideboard_count, legendary_repeats,
-                tokens)
+                tokens, swaps)
 
         self._status("Exporting for Proxic Arena\u2026")
-        popup = self._show_arena_export_progress(len(job.cards), cancel_event)
+        popup = self._show_arena_export_progress(
+            len(distinct_art_cards(detached)), cancel_event)
         self._arena_export_poll(progress, popup)
         future = submit_deck_file_job(run_export, name="mtg-arena-export")
         self._poll_deck_file_job(
@@ -345,13 +390,13 @@ class ArenaExportMixin:
 
     def _report_arena_export(
             self, result, unsupported, sideboard_count=0,
-            legendary_repeats=(), tokens=()):
+            legendary_repeats=(), tokens=(), swaps=()):
         """Report what the bundle holds, and what Arena still cannot play.
 
         One dialog rather than two: the write, the playability answer, the note
-        that the sideboard was left out, the legend-rule warning and the tokens
-        the deck can create belong to the same action, and a second popup to
-        dismiss is not news.
+        that the sideboard was left out, the legend-rule warning, the printings
+        the export changed and the tokens the deck can create belong to the
+        same action, and a second popup to dismiss is not news.
         """
         written = (
             f"Wrote {os.path.basename(result.output_path)}: "
@@ -372,10 +417,12 @@ class ArenaExportMixin:
                 f"{closing}\n\nNo art could be downloaded for "
                 f"{len(result.missing_art)} card(s); Proxic Arena draws its "
                 "own for those.")
-        token_section = arena_token_section(tokens)
+        sections = [
+            section for section in (
+                arena_printing_section(swaps), arena_token_section(tokens))
+            if section]
         self._show_arena_list_dialog(
-            lead, shown, remaining, closing,
-            sections=[token_section] if token_section else [])
+            lead, shown, remaining, closing, sections=sections)
 
 
     def _build_arena_list(self, shell, shown, remaining, max_rows):
@@ -444,7 +491,9 @@ class ArenaExportMixin:
             justify="left", anchor="w", wraplength=520
         ).pack(anchor="w", fill="x", pady=(0, 10))
 
-        list_rows = 8 if sections else 12
+        # Shorter lists as more of them share the dialog, so all of them fit
+        # a small screen.
+        list_rows = (12, 8, 6)[min(len(sections), 2)]
         if shown:
             self._build_arena_list(shell, shown, remaining, list_rows)
 

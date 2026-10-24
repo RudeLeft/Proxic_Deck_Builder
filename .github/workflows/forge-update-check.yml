@@ -1,10 +1,14 @@
 name: Forge Card Update Check
 
-# Proxic Arena plays whatever card scripts its copy of Forge holds, and this app
-# ships the list of card names those scripts cover so an export can warn about
-# cards Arena would lose. When upstream Forge gains card scripts, that list is
-# behind until Arena's Forge is updated and the list is rebuilt. This weekly
-# check asks exactly that question and tells the repository owner by issue.
+# Proxic Arena plays whatever card scripts its copy of Forge holds, and accepts
+# only the printings Forge's editions list. This app ships both lists, so an
+# export can warn about cards Arena would lose and pick printings Arena takes.
+# Both lists are built from one Forge release, the one Arena runs, because
+# Arena moves from release to release and refuses a card or printing that only
+# Forge's unreleased work has. So this weekly check compares them with Forge's
+# latest release: news means Forge has released a version Arena can move to,
+# after which both lists are rebuilt from it. It tells the repository owner by
+# issue.
 
 on:
   workflow_dispatch:
@@ -32,17 +36,29 @@ jobs:
       - name: Install project
         run: python -m pip install -e .
 
-      - name: Check out upstream Forge's card scripts
-        # Only the card scripts, as a shallow sparse checkout: the rest of Forge
-        # is large and plays no part in the comparison.
+      - name: Find Forge's latest release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(gh api repos/Card-Forge/forge/releases/latest --jq .tag_name)
+          test -n "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the card scripts and editions of Forge's latest release
+        # Only those two folders, as a shallow sparse checkout: the rest of
+        # Forge is large and plays no part in the comparison.
         uses: actions/checkout@v4
         with:
           repository: Card-Forge/forge
-          path: forge-upstream
-          sparse-checkout: forge-gui/res/cardsfolder
+          ref: ${{ steps.release.outputs.tag }}
+          path: forge-release
+          sparse-checkout: |
+            forge-gui/res/cardsfolder
+            forge-gui/res/editions
           fetch-depth: 1
 
-      - name: Compare upstream card scripts with the shipped Arena support list
+      - name: Compare Forge's latest release with the shipped Arena support list
         id: compare
         # The refresh tool is the one place the name rule lives, so this reuses
         # it in compare-only mode rather than restating the rule here. It exits
@@ -52,7 +68,8 @@ jobs:
         run: |
           set +e
           python tests/arena_support_refresh.py \
-            --cardsfolder forge-upstream/forge-gui/res/cardsfolder --check \
+            --cardsfolder forge-release/forge-gui/res/cardsfolder \
+            --editions forge-release/forge-gui/res/editions --check \
             | tee forge-check.txt
           code=${PIPESTATUS[0]}
           set -e
@@ -64,7 +81,7 @@ jobs:
             exit "$code"
           fi
 
-      - name: Tell the owner when Forge has card scripts the list lacks
+      - name: Tell the owner when a Forge release has cards or printings the list lacks
         # One issue at a time, assigned to and mentioning the owner so GitHub
         # emails them. While it stays open it is only refreshed in place, so a
         # list that stays behind for weeks does not send an email every week.
@@ -74,17 +91,18 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           title="Forge has new cards, so the Proxic Arena support list is behind"
-          sha=$(git -C forge-upstream rev-parse HEAD)
+          sha=$(git -C forge-release rev-parse HEAD)
+          release="${{ steps.release.outputs.tag }}"
           {
-            printf '@%s Forge has added card scripts that the Proxic Arena support list does not cover yet.\n\n' "$OWNER"
-            printf 'Until the list is rebuilt, a deck using these cards will not be warned about correctly on export.\n\n'
-            printf 'Forge version checked: https://github.com/Card-Forge/forge/commit/%s\n\n' "$sha"
+            printf '@%s Forge has released a version whose cards or printings the Proxic Arena support list does not match yet.\n\n' "$OWNER"
+            printf 'Proxic Arena plays the Forge release it runs, so the list changes only when Arena moves to this release.\n\n'
+            printf 'Forge release checked: %s (https://github.com/Card-Forge/forge/commit/%s)\n\n' "$release" "$sha"
             printf '```\n'
             cat forge-check.txt
             printf '```\n\n'
             printf 'To fix it:\n\n'
-            printf '1. Update the copy of Forge inside Proxic Arena.\n'
-            printf '2. Rebuild the list here with `python tests/arena_support_refresh.py --cardsfolder <path to Forge cardsfolder>`.\n'
+            printf '1. Move Proxic Arena to this Forge release.\n'
+            printf '2. Rebuild the list here from that same release with `python tests/arena_support_refresh.py --cardsfolder <its cardsfolder> --editions <its editions>`.\n'
             printf '3. Ship a new Proxic Deck Builder release.\n\n'
             printf 'This issue closes itself once the list is up to date.\n'
           } > issue.md
@@ -112,7 +130,7 @@ jobs:
             | head -n 1 || true)
           if [ -n "$existing" ]; then
             gh issue close "$existing" \
-              --comment "The Proxic Arena support list matches Forge's card scripts again." \
+              --comment "The Proxic Arena support list matches Forge's card scripts and editions again." \
               || echo "::warning::Could not close issue #$existing."
           fi
 

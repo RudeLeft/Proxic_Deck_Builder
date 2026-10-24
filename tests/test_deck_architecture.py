@@ -30,7 +30,7 @@ from mtgdb.deck.analysis import front_face, is_land
 from mtgdb.deck.io import read_deck_text
 from mtgdb.deck.model import BOARDS, Deck
 from mtgdb.deck.arena_support import (
-    ASSET_VERSION, front_face_name, load_supported_names,
+    ASSET_VERSION, front_face_name, load_arena_support, load_supported_names,
     normalize_card_name, unsupported_deck_names,
 )
 from mtgdb.deck.arena_limits import (
@@ -325,6 +325,20 @@ def _arena_unavailable_asset_check():
     not_a_list.write_text(
         json.dumps({"version": ASSET_VERSION, "names": "lightning_bolt"}),
         encoding="utf-8")
+    # A version 1 asset still answers the name question, with no printings.
+    version_one = Path(directory) / "version_one.json"
+    version_one.write_text(
+        json.dumps({"version": 1, "names": ["lightning_bolt"]}),
+        encoding="utf-8")
+    # A malformed printing table is dropped on its own; the names stay.
+    bad_printings = Path(directory) / "bad_printings.json"
+    bad_printings.write_text(
+        json.dumps({"version": ASSET_VERSION, "names": ["lightning_bolt"],
+                    "printings": {"lightning_bolt": "M10 146"},
+                    "set_codes": {}, "editions": {}}),
+        encoding="utf-8")
+    old = load_arena_support(version_one)
+    broken = load_arena_support(bad_printings)
 
     deck = Deck("Arena Unknown", "modern")
     deck.add(_card("unknown", "Totally Unknown Card"), "main", 1)
@@ -333,6 +347,11 @@ def _arena_unavailable_asset_check():
         and load_supported_names(wrong_version) == frozenset()
         and load_supported_names(malformed) == frozenset()
         and load_supported_names(not_a_list) == frozenset()
+        and not load_arena_support(missing).knows_printings
+        and old.names == frozenset({"lightning_bolt"})
+        and not old.knows_printings
+        and broken.names == frozenset({"lightning_bolt"})
+        and not broken.knows_printings
         # No names known means nothing is claimed unplayable.
         and unsupported_deck_names(deck, frozenset()) == []
         and unsupported_deck_names(deck, load_supported_names(missing)) == [])
@@ -393,18 +412,18 @@ def _arena_limits_check():
 
     at_limit = Deck("At Limit", "modern")
     at_limit.add(_card("bolt", "Lightning Bolt"), "main", 4)
-    at_limit.add(plains, "main", 61)
+    at_limit.add(plains, "main", 96)
     exact = arena_deck_limits(at_limit)
 
     one_over_size = Deck("One Over", "modern")
-    one_over_size.add(plains, "main", 66)
+    one_over_size.add(plains, "main", 101)
     over_size = arena_deck_limits(one_over_size)
 
     # The sideboard is not exported, so it counts toward neither limit: a
-    # 60-card deck with a 15-card sideboard (75 in all) is within the 65.
+    # 90-card deck with a 15-card sideboard (105 in all) is within the 100.
     split = Deck("Split", "modern")
-    split.add(plains, "main", 40)
-    split.add(plains, "side", 26)
+    split.add(plains, "main", 90)
+    split.add(plains, "side", 9)
     split.add(_card("bolt-side", "Lightning Bolt"), "side", 6)
     split_limits = arena_deck_limits(split)
 
@@ -488,14 +507,14 @@ def _arena_limits_check():
     back_two_limits = arena_deck_limits(back_two)
 
     return (
-        ARENA_MAX_CARDS == 65
+        ARENA_MAX_CARDS == 100
         and ARENA_COPY_LIMIT == 4
         # Exactly at both limits is allowed.
-        and exact.total_cards == 65 and exact.allowed
+        and exact.total_cards == 100 and exact.allowed
         # One card past the size limit is refused, and says by how many.
-        and over_size.total_cards == 66 and over_size.cards_over == 1
+        and over_size.total_cards == 101 and over_size.cards_over == 1
         and not over_size.allowed and over_size.over_copy_limit == ()
-        and split_limits.total_cards == 40 and split_limits.allowed
+        and split_limits.total_cards == 90 and split_limits.allowed
         # A fifth copy is refused, across printings.
         and five_limits.over_copy_limit == (("Lightning Bolt", 5, 4),)
         and not five_limits.allowed
@@ -536,6 +555,8 @@ def _arena_shipped_asset_check():
         return False
     payload = json.loads(path.read_text(encoding="utf-8"))
     names = load_supported_names(path)
+    support = load_arena_support(path)
+    printings = support.printings
     return (
         payload["version"] == ASSET_VERSION
         and payload["name_count"] == len(payload["names"])
@@ -544,7 +565,21 @@ def _arena_shipped_asset_check():
         # Keys ship already normalized, so a lookup needs no second pass.
         and all(normalize_card_name(name) == name
                 for name in sorted(names)[:500])
-        and "lightning_bolt" in names)
+        and "lightning_bolt" in names
+        # Printings ship for the cards, keyed the same way, each in an edition
+        # the asset describes.
+        and support.knows_printings
+        and len(printings) > 1000
+        and "M21 263" in printings["island"]
+        and "UNF 178" in printings["space_beleren"]
+        and all(printing.split(" ", 1)[0] in support.editions
+                for found in printings.values() for printing in found)
+        # Forge's lookup takes an edition's code, alias or second code -- Conflux
+        # is CFX, also CON -- and never a Scryfall code alone: UGIN is refused.
+        and support.set_codes.get("CON") == "CFX"
+        and support.set_codes.get("M21") == "M21"
+        and "UGIN" not in support.set_codes
+        and support.editions["UGF"][0] == "ugin")
 
 
 def _arena_refresh_script_check():
@@ -587,6 +622,20 @@ def _arena_refresh_script_check():
         and "required=True" in source
         and "DEFAULT_CARDSFOLDER" not in source
         and "Proxic_Arena" not in source
+        # The editions, too, have no default, and are needed to write.
+        and '"--editions"' in source
+        and 'parser.error("--editions is required to write the asset")'
+        in source
+        # Printings are read by Forge's own edition rule: its card-line
+        # pattern and printing sections, and its code precedence, never the
+        # Scryfall code as an accepted set code.
+        and "CARD_LINE = re.compile(" in source
+        and "PRINTING_SECTIONS = frozenset(" in source
+        and 'metadata.get("code2")' in source
+        and 'metadata.get("alias")' in source
+        and "set_codes.setdefault(accepted, code)" in source
+        and "MINIMUM_CREDIBLE_PRINTINGS" in source
+        and "PRINTING_SEPARATOR" in source
         # .gitattributes pins LF for this tree, so the asset is written with it.
         and r'newline="\n"' in source)
 
@@ -655,7 +704,7 @@ def _arena_tokens_check():
 
 
 def _forge_update_workflow_check():
-    """VER-015: upstream Forge's card scripts are compared weekly, and reported.
+    """VER-015: upstream Forge's card scripts and editions are compared weekly.
 
     The workflow runs on GitHub, so this establishes its contract from the file
     alone: what it checks out, which tool does the comparing, how a stale list
@@ -669,12 +718,21 @@ def _forge_update_workflow_check():
     tool = script.read_text(encoding="utf-8")
     return (
         "workflow_dispatch:" in text and "schedule:" in text
-        # Upstream's card scripts and nothing else of Forge.
+        # The card scripts and editions of ONE Forge checkout, at Forge's
+        # latest release -- what Arena moves to -- and nothing else of Forge,
+        # never its unreleased work.
         and "repository: Card-Forge/forge" in text
-        and "sparse-checkout: forge-gui/res/cardsfolder" in text
-        # The one tool that owns the name rule, run in compare-only mode.
+        and "repos/Card-Forge/forge/releases/latest --jq .tag_name" in text
+        and "ref: ${{ steps.release.outputs.tag }}" in text
+        and text.count("repository: Card-Forge/forge") == 1
+        and "            forge-gui/res/cardsfolder\n" in text
+        and "            forge-gui/res/editions\n" in text
+        and "forge-upstream" not in text
+        # The one tool that owns the name and printing rules, compare-only,
+        # given the editions so a printing change is seen as well as a name.
         and "python tests/arena_support_refresh.py" in text
-        and "--cardsfolder forge-upstream/forge-gui/res/cardsfolder" in text
+        and "--cardsfolder forge-release/forge-gui/res/cardsfolder" in text
+        and "--editions forge-release/forge-gui/res/editions --check" in text
         and "--check" in text
         # A behind list is a result and a broken check is a failure, told apart
         # by a marker the tool really prints.
@@ -937,6 +995,7 @@ def main():
             "mtgdb/deck/model.py", "mtgdb/deck/io.py", "mtgdb/deck/analysis.py",
             "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py",
             "mtgdb/deck/arena_limits.py", "mtgdb/deck/arena_tokens.py",
+            "mtgdb/deck/arena_printings.py",
             "mtgdb/ui/app.py", "mtgdb/ui/deck.py",
             "mtgdb/ui/deck_files.py", "mtgdb/ui/deck_stats.py")
     }
@@ -1090,7 +1149,8 @@ def main():
             for name in (
                 "mtgdb/deck/model.py", "mtgdb/deck/io.py", "mtgdb/deck/analysis.py",
                 "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py",
-                "mtgdb/deck/arena_limits.py", "mtgdb/deck/arena_tokens.py")),
+                "mtgdb/deck/arena_limits.py", "mtgdb/deck/arena_tokens.py",
+                "mtgdb/deck/arena_printings.py")),
         "model owns no parser, probability, randomness, or legality imports": (
             not ({"re", "json", "math", "random"} & imports["mtgdb/deck/model.py"])),
         "Arena lookup keys mirror the Proxic Arena name rule":

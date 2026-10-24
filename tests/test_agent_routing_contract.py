@@ -43,6 +43,8 @@ SOURCE_MARKERS = {
         "ARENA_MAX_CARDS =", "def arena_deck_limits("),
     "mtgdb/deck/arena_tokens.py": (
         "class ArenaToken", "def deck_tokens("),
+    "mtgdb/deck/arena_printings.py": (
+        "def printing_accepted(", "def arena_export_deck("),
     "mtgdb/arena/export.py": ("def art_filename(", "def build_export("),
     "mtgdb/deck/sessions.py": ("class DeckSession", "class DeckSessionManager"),
     "mtgdb/database/authorities.py": ("CATALOG_AUTHORITIES =", "SUBTYPE_AUTHORITIES ="),

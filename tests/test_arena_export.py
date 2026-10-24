@@ -419,7 +419,8 @@ def _limit_refusal_check():
         # The snapshot that was measured is the one exported: it is taken
         # once, and the job is built from it rather than from the live deck.
         and body.count("_detached_deck_copy(") == 1
-        and "ArenaExportJob.from_deck(\n            detached," in body
+        and "arena_export_deck(\n                detached," in body
+        and "ArenaExportJob.from_deck(\n                export_deck," in body
         # The limits are not judged in the UI, and Save Deck As never asks.
         and "arena_limits" not in deck_files
         and "ARENA_MAX_CARDS" not in deck_files
@@ -559,7 +560,7 @@ def _arena_limit_sentences_check():
     )
 
     both = ArenaDeckLimits(
-        total_cards=72, over_copy_limit=(("Lightning Bolt", 6, 4),))
+        total_cards=107, over_copy_limit=(("Lightning Bolt", 6, 4),))
     lead, shown, rest, closing = arena_limit_text(both)
     many = ArenaDeckLimits(
         total_cards=40, over_copy_limit=tuple(
@@ -568,18 +569,330 @@ def _arena_limit_sentences_check():
     _lead, over_shown, over_rest, _closing = arena_limit_text(many)
     return (
         # The limits are named in the lead, whichever one was broken.
-        "65 cards" in lead and "4 copies" in lead
+        "100 cards" in lead and "4 copies" in lead
         # A legendary card may repeat, so the refusal never mentions the legend
         # rule: that is a warning in the report, not a reason to refuse.
         and "legendary" not in lead.lower()
         and shown == [
-            "Deck size: 72 cards, 7 over the 65-card limit",
+            "Deck size: 107 cards, 7 over the 100-card limit",
             "Lightning Bolt: 6 copies, 2 over the limit of 4"]
         and rest == 0
         and closing == "Nothing was exported. Adjust the deck and try again."
         # The listing is capped and the remainder counted, not dropped.
         and len(over_shown) == ARENA_WARNING_NAME_LIMIT
         and over_rest == 3)
+
+
+def _row(identifier, name, set_code, number, **extra):
+    """A stored Scryfall printing, shaped like a `cards` row."""
+    row = {
+        "id": identifier, "name": name, "set_code": set_code,
+        "collector_number": number, "lang": "en", "paper": 1, "promo": 0,
+        "frame_effects": "[]", "promo_types": "[]", "universes_beyond": 0,
+        "image_png": f"https://example/{identifier}.png",
+    }
+    row.update(extra)
+    return row
+
+
+def _printing_support():
+    """A small asset: what Forge has, by Forge's own edition rule."""
+    from mtgdb.deck.arena_support import ArenaSupport
+
+    return ArenaSupport(
+        names=frozenset({
+            "island", "lightning_bolt", "ugin_the_spirit_dragon",
+            "llanowar_elves", "nameless_wonder", "shock"}),
+        printings={
+            "island": frozenset({"M21 263", "TRK 319", "C21 400"}),
+            "lightning_bolt": frozenset({"M10 146", "2X2 117"}),
+            "ugin_the_spirit_dragon": frozenset({"UGF 1"}),
+            "llanowar_elves": frozenset({"M19 314", "DOM 168"}),
+            "nameless_wonder": frozenset({"OLD 9"}),
+            "shock": frozenset({"SHW 5", "SHW 300"}),
+        },
+        # CON is Conflux's second code; UGIN is only Ugin's Fate's Scryfall
+        # code, which Forge's lookup does not accept.
+        set_codes={
+            "M21": "M21", "TRK": "TRK", "C21": "C21", "M10": "M10",
+            "2X2": "2X2", "UGF": "UGF", "M19": "M19", "DOM": "DOM",
+            "OLD": "OLD", "SHW": "SHW"},
+        editions={
+            "M21": ("m21", "Core", "2020-07-03"),
+            "TRK": ("trk", "Expansion", "2026-11-13"),
+            "C21": ("c21", "Commander", "2026-12-01"),
+            "M10": ("m10", "Core", "2009-07-17"),
+            "2X2": ("2x2", "Reprint", "2022-07-08"),
+            "UGF": ("ugin", "Promo", "2015-01-01"),
+            "M19": ("m19", "Core", "2018-07-13"),
+            "DOM": ("dom", "Expansion", "2018-04-27"),
+            "OLD": ("old", "Expansion", "1999-01-01"),
+            "SHW": ("shw", "Expansion", "2024-02-09"),
+        })
+
+
+def _printing_swap_check():
+    """ARN-011: a printing Arena lacks is exported as one it has, and only then."""
+    from mtgdb.deck.arena_printings import (
+        arena_export_deck, choose_printing, printing_accepted,
+    )
+    from mtgdb.deck.arena_support import ArenaSupport
+
+    support = _printing_support()
+    rows = {
+        "Island": [
+            _row("island-mdd", "Island", "mdd", "294"),
+            _row("island-m21", "Island", "m21", "263"),
+            # Newer, but Universes Beyond, so after the in-universe printing.
+            _row("island-trk", "Island", "trk", "319", universes_beyond=1),
+            # Newer still, but a commander edition.
+            _row("island-c21", "Island", "c21", "400"),
+        ],
+        "Lightning Bolt": [
+            _row("bolt-m10", "Lightning Bolt", "m10", "146"),
+            _row("bolt-m10-promo", "Lightning Bolt", "m10", "146p", promo=1),
+            _row("bolt-2x2", "Lightning Bolt", "2x2", "117"),
+        ],
+        "Ugin, the Spirit Dragon": [
+            _row("ugin", "Ugin, the Spirit Dragon", "ugin", "1"),
+        ],
+        "Llanowar Elves": [
+            _row("elves-promo", "Llanowar Elves", "pdom", "168s"),
+        ],
+        "Nameless Wonder": [_row("wonder", "Nameless Wonder", "xyz", "9")],
+        # One release, two looks: the plain card wins over the lower number.
+        "Shock": [
+            _row("shock-xyz", "Shock", "xyz", "1"),
+            _row("shock-showcase", "Shock", "shw", "5",
+                 frame_effects='["showcase"]'),
+            _row("shock-plain", "Shock", "shw", "300"),
+        ],
+    }
+    asked = []
+
+    def printings_of(name):
+        asked.append(name)
+        return rows.get(name, [])
+
+    island_mdd = rows["Island"][0]
+    bolt_promo = rows["Lightning Bolt"][1]
+    accepted = [rows["Island"][1], rows["Lightning Bolt"][0]]
+
+    # A deck of printings Forge has comes back as the same deck, untouched.
+    fine = Deck("Fine", "modern")
+    for card in accepted:
+        fine.add(card, "main", 4)
+    fine_out, fine_swaps = arena_export_deck(fine, support, printings_of)
+    asked_for_fine = list(asked)
+
+    deck = Deck("Mixed", "modern")
+    deck.add(island_mdd, "main", 20)
+    deck.add(rows["Island"][1], "main", 2)
+    deck.add(bolt_promo, "main", 4)
+    deck.add(rows["Ugin, the Spirit Dragon"][0], "main", 1)
+    deck.add(rows["Llanowar Elves"][0], "main", 4)
+    deck.add(rows["Nameless Wonder"][0], "main", 1)
+    deck.add(rows["Shock"][0], "main", 4)
+    # A name the asset does not know is the name check's business: left alone.
+    deck.add(_row("mystery", "Mystery Card", "zzz", "1"), "main", 1)
+    deck.add(bolt_promo, "side", 1)
+    before = deck.snapshot_entries()
+    exported, swaps = arena_export_deck(deck, support, printings_of)
+    text = deck_to_text(exported, include_side=False)
+    by_name = {swap.name: swap for swap in swaps}
+
+    # The art downloaded is the printing exported.
+    downloaded = []
+    with tempfile.TemporaryDirectory() as tmp:
+        job = ArenaExportJob.from_deck(
+            exported, text, pathlib.Path(tmp) / "Mixed.zip", tmp)
+        build_export(job, _stub_downloader(downloaded))
+
+    version_one = ArenaSupport(names=support.names)
+    v1_out, v1_swaps = arena_export_deck(deck, version_one, printings_of)
+    return (
+        fine_out is fine and fine_swaps == () and asked_for_fine == []
+        and printing_accepted(support, rows["Island"][1])
+        # Forge's lookup takes any case, and a set with no number by set alone.
+        and printing_accepted(support, {"name": "Island", "set_code": "m21",
+                                         "collector_number": "263"})
+        and printing_accepted(support, {"name": "Island", "set_code": "M21"})
+        and printing_accepted(support, {"name": "Island"})
+        and not printing_accepted(support, island_mdd)
+        and not printing_accepted(support, bolt_promo)
+        # An Island Forge lacks becomes the in-universe ordinary printing.
+        and by_name["Island"].to_set == "M21"
+        and by_name["Island"].to_number == "263"
+        and (by_name["Island"].from_set, by_name["Island"].from_number)
+        == ("MDD", "294")
+        # The same set wins when Forge has it, at Forge's own number.
+        and (by_name["Lightning Bolt"].to_set,
+             by_name["Lightning Bolt"].to_number) == ("M10", "146")
+        # A set Forge knows only by another code is written in Forge's code.
+        and (by_name["Ugin, the Spirit Dragon"].to_set,
+             by_name["Ugin, the Spirit Dragon"].to_number) == ("UGF", "1")
+        and "1 Ugin, the Spirit Dragon [UGF:1]" in text
+        # Nothing Forge has can be pictured: the line names the card alone.
+        and by_name["Llanowar Elves"].to_set == ""
+        and "4 Llanowar Elves\n" in text
+        and "Mystery Card" not in by_name
+        and "1 Mystery Card [ZZZ:1]" in text
+        and "22 Island [M21:263]" in text
+        and "4 Lightning Bolt [M10:146]" in text
+        and "4 Shock [SHW:300]" in text
+        and "MDD" not in text and "146p" not in text
+        # Each name was looked up once at most.
+        and asked.count("Island") == 1
+        and "Mystery Card" not in asked
+        # The picture bundled is the chosen printing's, not the deck's own.
+        and "island-m21" in downloaded and "island-mdd" not in downloaded
+        and "bolt-m10" in downloaded and "bolt-m10-promo" not in downloaded
+        # The saved deck keeps every printing, sideboard included.
+        and deck.snapshot_entries() == before
+        and island_mdd["set_code"] == "mdd"
+        and deck.total("side") == 1
+        # A version 1 asset knows no printings: nothing changes.
+        and v1_out is deck and v1_swaps == ()
+        and choose_printing(version_one, island_mdd, rows["Island"]) is None)
+
+
+def _shipped_asset_printing_check():
+    """ARN-011: the real refusals of 2026-10-23, against the shipped asset.
+
+    Arena refused Island MDD 294 and Space Beleren PLST UNF-178 under Forge
+    2.0.15, which lacked both printings; later Forge added them. So the
+    shipped asset is checked both ways: as it ships, where a printing Forge
+    has is kept, and with those two printings taken out, as 2.0.15 had it,
+    where each must become a printing Forge does have.
+    """
+    from mtgdb.deck.arena_printings import arena_export_deck, printing_accepted
+    from mtgdb.deck.arena_support import ArenaSupport, load_arena_support
+
+    shipped = load_arena_support(ROOT / "assets/arena/supported_cards.json")
+    lacking = dict(shipped.printings)
+    lacking["island"] = shipped.printings["island"] - {"MDD 294"}
+    lacking["space_beleren"] = (
+        shipped.printings["space_beleren"] - {"PLST UNF-178"})
+    older = ArenaSupport(
+        names=shipped.names, printings=lacking,
+        set_codes=shipped.set_codes, editions=shipped.editions)
+
+    island_rows = [
+        _row("island-mdd", "Island", "mdd", "294"),
+        _row("island-m21", "Island", "m21", "263"),
+        _row("island-m21-showcase", "Island", "m21", "310",
+             frame_effects='["showcase"]'),
+    ]
+    beleren_rows = [
+        _row("beleren-plst", "Space Beleren", "plst", "UNF-178"),
+        _row("beleren-178", "Space Beleren", "unf", "178"),
+        _row("beleren-276", "Space Beleren", "unf", "276",
+             frame_effects='["showcase"]'),
+    ]
+    rows = {"Island": island_rows, "Space Beleren": beleren_rows}
+    deck = Deck("Refused", "vintage")
+    deck.add(island_rows[0], "main", 11)
+    deck.add(beleren_rows[0], "main", 2)
+
+    def export(support):
+        exported, swaps = arena_export_deck(
+            deck, support, lambda name: rows.get(name, []))
+        accepted = all(printing_accepted(support, entry["card"])
+                       for entry in exported.entries("main"))
+        return {swap.name: swap for swap in swaps}, accepted
+
+    swapped, older_accepted = export(older)
+    kept, shipped_accepted = export(shipped)
+    island = swapped.get("Island")
+    beleren = swapped.get("Space Beleren")
+    return (
+        shipped.knows_printings
+        # Every printing of the exported deck is one Forge has, either way.
+        and older_accepted and shipped_accepted
+        # As 2.0.15 had it: Island lands on a printing in Forge's list, the
+        # ordinary one, and PLST UNF-178 exports as UNF 178.
+        and island is not None and beleren is not None
+        and f"{island.to_set} {island.to_number}" in older.printings["island"]
+        and (island.to_set, island.to_number) == ("M21", "263")
+        and (beleren.to_set, beleren.to_number) == ("UNF", "178")
+        # Wherever Forge has the deck's own printing, it is kept as it is.
+        and all(
+            (name in kept) != printing_accepted(shipped, card)
+            for name, card in (("Island", island_rows[0]),
+                               ("Space Beleren", beleren_rows[0]))))
+
+
+def _unchanged_export_check():
+    """ARN-011: a deck of printings Forge has exports byte-for-byte as before."""
+    from mtgdb.deck.arena_printings import arena_export_deck
+
+    support = _printing_support()
+    deck = Deck("Same", "modern")
+    deck.add(_row("island-m21", "Island", "m21", "263"), "main", 20)
+    deck.add(_row("bolt-m10", "Lightning Bolt", "m10", "146"), "main", 4)
+
+    def contents(target_deck, folder, name):
+        job = ArenaExportJob.from_deck(
+            target_deck, deck_to_text(target_deck, include_side=False),
+            pathlib.Path(folder) / name, folder)
+        build_export(job, _stub_downloader())
+        with zipfile.ZipFile(job.output_path) as archive:
+            return {
+                member: archive.read(member) for member in archive.namelist()}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        before = contents(deck, tmp, "before.zip")
+        exported, swaps = arena_export_deck(
+            deck, support, lambda _name: [])
+        after = contents(exported, tmp, "after.zip")
+    return swaps == () and exported is deck and before == after
+
+
+def _printing_sentences_check():
+    """ARN-011: each changed printing in plain words, apart from the widgets."""
+    from mtgdb.deck.arena_printings import ArenaPrintingSwap
+    from mtgdb.ui.arena_export import (
+        ARENA_PRINTING_INTRO, ARENA_WARNING_NAME_LIMIT, arena_printing_line,
+        arena_printing_section,
+    )
+
+    island = ArenaPrintingSwap("Island", "MDD", "294", "M21", "263")
+    by_name = ArenaPrintingSwap("Llanowar Elves", "PDOM", "168s", "", "")
+    many = [
+        ArenaPrintingSwap(f"Card {index}", "AAA", "1", "BBB", "2")
+        for index in range(ARENA_WARNING_NAME_LIMIT + 2)]
+    intro, shown, remaining = arena_printing_section(many)
+    return (
+        arena_printing_line(island)
+        == "Island: MDD 294 -> M21 263 (the printing Proxic Arena has)"
+        and arena_printing_line(by_name) == (
+            "Llanowar Elves: PDOM 168s -> listed by name only "
+            "(Proxic Arena picks the printing)")
+        # Nothing changed, nothing said.
+        and arena_printing_section(()) == ()
+        and intro == ARENA_PRINTING_INTRO
+        and "saved deck keeps" in intro
+        and len(shown) == ARENA_WARNING_NAME_LIMIT and remaining == 2)
+
+
+def _printing_ui_check():
+    """ARN-011: printings are chosen on the export worker, from the snapshot."""
+    source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
+    deck_files = (ROOT / "mtgdb/ui/deck_files.py").read_text(encoding="utf-8")
+    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    worker = body.split("def run_export")[1].split("def exported")[0]
+    report = source.split("def _report_arena_export")[1].split("\n    def ")[0]
+    return (
+        # On the worker, from the measured snapshot, before the job is built.
+        "arena_export_deck(\n                detached, support, printings_named)"
+        in worker
+        and worker.find("arena_export_deck(") < worker.find(
+            "ArenaExportJob.from_deck(")
+        and "ArenaExportJob.from_deck(\n                export_deck," in worker
+        and "printings_named = self.db.printings_named" in body
+        # Reported in the one dialog, and never on Save Deck As.
+        and "arena_printing_section(swaps)" in report
+        and "arena_printings" not in deck_files)
 
 
 def main():
@@ -612,6 +925,16 @@ def main():
             _back_face_check(),
         "tokens a deck can create are listed in plain words, never refused":
             _arena_token_notice_check(),
+        "a printing Arena lacks is exported as one it has, and only then":
+            _printing_swap_check(),
+        "the real Island and Space Beleren refusals export as Forge's printings":
+            _shipped_asset_printing_check(),
+        "a deck of printings Forge has exports byte-for-byte as before":
+            _unchanged_export_check(),
+        "each changed printing is listed in plain words":
+            _printing_sentences_check(),
+        "printings are chosen on the export worker from the measured snapshot":
+            _printing_ui_check(),
     }
     ok = True
     for label, passed in checks.items():

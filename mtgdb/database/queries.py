@@ -123,6 +123,19 @@ class CardQueryMixin:
         finally:
             reader.close()
 
+    def printings_named(self, name):
+        """Every printing stored under exactly ``name``, tokens and art cards excluded.
+
+        Proxic Arena export reads these to find a printing Forge also has
+        (ARN-011). Unranked: the caller decides which printing it wants.
+        """
+        placeholders = ",".join("?" * len(NON_CARD_LAYOUTS))
+        rows = self._read(
+            "SELECT * FROM cards WHERE name = ? COLLATE NOCASE "
+            f"AND (layout IS NULL OR layout NOT IN ({placeholders}))",
+            (str(name or ""), *NON_CARD_LAYOUTS))
+        return [dict(row) for row in rows]
+
     def get_by_name(self, name, allowed_set_types=None, allowed_set_codes=None,
                     allowed_collector_numbers=None, *, paper_only=True, lang=None,
                     allow_non_card=False):

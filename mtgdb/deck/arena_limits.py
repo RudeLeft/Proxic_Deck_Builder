@@ -28,7 +28,7 @@ import re
 from mtgdb.deck.arena_support import front_face_name, normalize_card_name
 from mtgdb.deck.legality import group_copy_limit
 
-ARENA_MAX_CARDS = 65
+ARENA_MAX_CARDS = 100
 ARENA_COPY_LIMIT = 4
 
 _PERMANENT_TYPES = frozenset({
