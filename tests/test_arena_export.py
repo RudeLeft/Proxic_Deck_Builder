@@ -404,26 +404,37 @@ def _arena_warning_sentences_check():
         and over_rest == 5)
 
 
+def _export_flow(source):
+    """The export's two steps: snapshot and read the rules, then refuse or write."""
+    first = source.split("def _export_arena")[1].split("\n    def ")[0]
+    second = source.split("def _continue_arena_export")[1].split("\n    def ")[0]
+    return first, second
+
+
 def _limit_refusal_check():
-    """ARN-007: a deck over Arena's limits is refused before any save prompt."""
+    """ARN-007, ARN-012: the rules are read on a worker, then a refusal comes before any save prompt."""
     source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
     deck_files = (ROOT / "mtgdb/ui/deck_files.py").read_text(encoding="utf-8")
-    body = source.split("def _export_arena")[1].split("\n    def ")[0]
-    snapshot = body.find("detached = self._detached_deck_copy(deck)")
-    measured = body.find("arena_deck_limits(detached)")
-    refused = body.find("_show_arena_list_dialog(*arena_limit_text(")
-    prompted = body.find("filedialog.asksaveasfilename(")
+    first, second = _export_flow(source)
+    worker = first.split("def read_rules")[1].split("def checked")[0]
+    measured = second.find("arena_deck_limits(detached, rules.format)")
+    refused = second.find("self._show_arena_list_dialog(lead, shown, remaining, closing)")
+    prompted = second.find("filedialog.asksaveasfilename(")
     return (
-        # Snapshotted, measured, refused, and only then asked where to save.
-        0 <= snapshot < measured < refused < prompted
-        # The snapshot that was measured is the one exported: it is taken
-        # once, and the job is built from it rather than from the live deck.
-        and body.count("_detached_deck_copy(") == 1
-        and "arena_export_deck(\n                detached," in body
-        and "ArenaExportJob.from_deck(\n                export_deck," in body
+        # Snapshotted once, the rules obtained on the worker, then handed on.
+        first.count("_detached_deck_copy(") == 1
+        and "obtain_rules(" in worker and "rules_from_document(" in worker
+        and 'submit_deck_file_job(read_rules, name="mtg-arena-rules")' in first
+        and "self._continue_arena_export(deck, detached, rules, obtained)" in first
+        and "filedialog" not in first
+        # Measured by Arena's format, refused, and only then asked where to save.
+        and 0 <= measured < refused < prompted
+        and "arena_limit_text(limits, rules.format)" in second
+        # The snapshot that was measured is the one exported.
+        and "arena_export_deck(\n                detached," in second
+        and "ArenaExportJob.from_deck(\n                export_deck," in second
         # The limits are not judged in the UI, and Save Deck As never asks.
         and "arena_limits" not in deck_files
-        and "ARENA_MAX_CARDS" not in deck_files
         and "messagebox." not in source)
 
 
@@ -431,7 +442,7 @@ def _sideboard_exclusion_check():
     """ARN-008: the sideboard is left out, checked against the exported deck."""
     source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
     deck_files = (ROOT / "mtgdb/ui/deck_files.py").read_text(encoding="utf-8")
-    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    body = "".join(_export_flow(source))
     with_side = Deck("With Side", "modern")
     with_side.add(_card("a", "Lightning Bolt"), "main", 4)
     with_side.add(_card("b", "Mind Stone"), "side", 2)
@@ -476,7 +487,7 @@ def _arena_legendary_note_check():
     long_note = arena_legendary_note(crowd)
     source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
     report = source.split("def _report_arena_export")[1].split("\n    def ")[0]
-    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    body = _export_flow(source)[1]
     return (
         # Nothing repeats, nothing is said about the legend rule.
         arena_legendary_note(()) == ""
@@ -517,7 +528,7 @@ def _arena_token_notice_check():
     intro, lines, rest = arena_token_section((goblin,))
     crowded = arena_token_section(crowd)
     source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
-    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    body = _export_flow(source)[1]
     report = source.split("def _report_arena_export")[1].split("\n    def ")[0]
     return (
         # No token, no mention of tokens at all.
@@ -555,27 +566,39 @@ def _arena_token_notice_check():
 def _arena_limit_sentences_check():
     """ARN-007: the refusal's sentences, composed apart from its widgets."""
     from mtgdb.deck.arena_limits import ArenaDeckLimits
+    from mtgdb.deck.arena_support import ArenaFormat
     from mtgdb.ui.arena_export import (
         ARENA_WARNING_NAME_LIMIT, arena_limit_text,
     )
 
+    rules_format = ArenaFormat(min_cards=60, max_cards=65, max_copies=4)
     both = ArenaDeckLimits(
-        total_cards=107, over_copy_limit=(("Lightning Bolt", 6, 4),))
-    lead, shown, rest, closing = arena_limit_text(both)
+        total_cards=72, min_cards=60, max_cards=65,
+        over_copy_limit=(("Lightning Bolt", 6, 4),))
+    lead, shown, rest, closing = arena_limit_text(both, rules_format)
+    small = ArenaDeckLimits(
+        total_cards=52, min_cards=60, max_cards=65,
+        short_side_decks=(("CONTRAPTIONS", 14, 15),))
+    _lead, small_shown, _rest, _closing = arena_limit_text(small, rules_format)
     many = ArenaDeckLimits(
-        total_cards=40, over_copy_limit=tuple(
+        total_cards=60, min_cards=60, max_cards=65, over_copy_limit=tuple(
             (f"Card {index}", 5, 4)
             for index in range(ARENA_WARNING_NAME_LIMIT + 3)))
-    _lead, over_shown, over_rest, _closing = arena_limit_text(many)
+    _lead, over_shown, over_rest, _closing = arena_limit_text(many, rules_format)
     return (
-        # The limits are named in the lead, whichever one was broken.
-        "100 cards" in lead and "4 copies" in lead
+        # Arena's own numbers are named in the lead, whichever one was broken.
+        "60 to 65 cards" in lead and "4 copies" in lead
+        and "basic lands are exempt" in lead
         # A legendary card may repeat, so the refusal never mentions the legend
         # rule: that is a warning in the report, not a reason to refuse.
         and "legendary" not in lead.lower()
         and shown == [
-            "Deck size: 107 cards, 7 over the 100-card limit",
+            "Deck size: 72 cards, 7 over the 65-card limit",
             "Lightning Bolt: 6 copies, 2 over the limit of 4"]
+        and small_shown == [
+            "Deck size: 52 cards, 8 short of the 60-card minimum",
+            "Contraption deck: 14 cards; Proxic Arena needs at least 15 "
+            "Contraptions, or none"]
         and rest == 0
         and closing == "Nothing was exported. Adjust the deck and try again."
         # The listing is capped and the remainder counted, not dropped.
@@ -766,9 +789,9 @@ def _shipped_asset_printing_check():
     where each must become a printing Forge does have.
     """
     from mtgdb.deck.arena_printings import arena_export_deck, printing_accepted
-    from mtgdb.deck.arena_support import ArenaSupport, load_arena_support
+    from mtgdb.deck.arena_support import ArenaSupport, load_arena_rules
 
-    shipped = load_arena_support(ROOT / "assets/arena/supported_cards.json")
+    shipped = load_arena_rules(ROOT / "assets/arena/deck_rules.json").support
     lacking = dict(shipped.printings)
     lacking["island"] = shipped.printings["island"] - {"MDD 294"}
     lacking["space_beleren"] = (
@@ -879,7 +902,7 @@ def _printing_ui_check():
     """ARN-011: printings are chosen on the export worker, from the snapshot."""
     source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
     deck_files = (ROOT / "mtgdb/ui/deck_files.py").read_text(encoding="utf-8")
-    body = source.split("def _export_arena")[1].split("\n    def ")[0]
+    body = _export_flow(source)[1]
     worker = body.split("def run_export")[1].split("def exported")[0]
     report = source.split("def _report_arena_export")[1].split("\n    def ")[0]
     return (

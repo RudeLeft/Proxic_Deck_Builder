@@ -126,6 +126,12 @@ def _internal_import_allowed(module, imported):
         return imported.startswith(("mtgdb.search.", "mtgdb.database.", "mtgdb.core."))
     if module.startswith("mtgdb/deck/"):
         return imported.startswith(("mtgdb.deck.", "mtgdb.core."))
+    if module == "mtgdb/arena/connection.py":
+        # The link to Arena: its own transport (no redirects, https or this
+        # computer only) and a sealed token, and nothing of the deck rules.
+        return imported in {
+            "mtgdb.core.atomic_files", "mtgdb.core.secret_store",
+            "mtgdb.core.version"}
     if module.startswith("mtgdb/arena/"):
         # Naming and packaging only. The card-art download, its cache and its
         # HTTP policy stay in printing and are injected by the caller, so this
@@ -1131,7 +1137,6 @@ def main():
             {
                 ".github/workflows/build-windows.yml",
                 ".github/workflows/taxonomy-audit.yml",
-                ".github/workflows/forge-update-check.yml",
             } <= repository_paths),
         "every Feature-map path resolves to current source": (
             bool(feature_references)

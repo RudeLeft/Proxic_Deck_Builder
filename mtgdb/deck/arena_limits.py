@@ -1,16 +1,18 @@
-"""Whether a deck is within the limits Proxic Arena export accepts.
+"""Whether a deck is within the limits Proxic Arena's import accepts.
 
-Proxic Arena export refuses a deck with more than ``ARENA_MAX_CARDS`` cards in
-all, or more than ``ARENA_COPY_LIMIT`` copies of one card name. This module only
-measures the deck against those two numbers; the refusal's wording and dialog
-belong to the Arena export UI, and the name key belongs to ``arena_support``.
+The limits are Arena's, read from its deck rules (``ArenaFormat``): a main deck
+of ``min_cards`` to ``max_cards`` cards, at most ``max_copies`` of one card
+name, the named basic lands exempt and nothing else, and the side decks the
+Un-sets use (Contraptions, Attractions), which are not in the main deck's count
+and hold a smallest number of cards and one copy of each. This module only
+measures a deck against them; the refusal's wording and dialog belong to the
+Arena export UI, and the name key belongs to ``arena_support``. It knows no
+number of its own, so a change to Arena's format reaches the export with no
+change here.
 
-Only the main deck counts, because the sideboard is not exported. Copies are
+Only the main board counts, because the sideboard is not exported. Copies are
 counted per name as Proxic Arena resolves it -- the front face, case-folded and
-accent-stripped -- so two printings of one card add together. Basic lands and
-cards whose own text allows any number of copies are exempt from the copy limit,
-by the same rule the legality panel applies, so the two can never disagree about
-what is exempt.
+accent-stripped -- so two printings of one card add together.
 
 It also finds the legendary permanents a deck holds more than once. That never
 refuses an export, because a deck may hold several; it is a warning to give the
@@ -25,11 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from mtgdb.deck.arena_support import front_face_name, normalize_card_name
-from mtgdb.deck.legality import group_copy_limit
-
-ARENA_MAX_CARDS = 100
-ARENA_COPY_LIMIT = 4
+from mtgdb.deck.arena_support import card_key
 
 _PERMANENT_TYPES = frozenset({
     "artifact", "battle", "creature", "enchantment", "land", "planeswalker"})
@@ -37,11 +35,18 @@ _PERMANENT_TYPES = frozenset({
 
 @dataclass(frozen=True)
 class ArenaDeckLimits:
-    """One deck's measurements against Proxic Arena's export limits."""
+    """One deck's measurements against Proxic Arena's deck limits."""
 
+    # Cards in the main deck, side-deck cards left out.
     total_cards: int
-    # (name as stored, copies in the deck, copies allowed), by name.
-    over_copy_limit: tuple[tuple[str, int, int], ...]
+    min_cards: int
+    max_cards: int
+    # (name as stored, copies in the deck, copies allowed), by name, main deck
+    # and side decks alike.
+    over_copy_limit: tuple[tuple[str, int, int], ...] = ()
+    # (side deck, cards in it, fewest it may hold) for each side deck holding
+    # some cards but too few.
+    short_side_decks: tuple[tuple[str, int, int], ...] = ()
     # (name as stored, copies in the deck) for each legendary permanent held
     # more than once, by name. A warning, never a reason to refuse.
     legendary_repeats: tuple[tuple[str, int], ...] = ()
@@ -49,11 +54,18 @@ class ArenaDeckLimits:
     @property
     def cards_over(self):
         """How many cards past the size limit, or 0."""
-        return max(0, self.total_cards - ARENA_MAX_CARDS)
+        return max(0, self.total_cards - self.max_cards)
+
+    @property
+    def cards_short(self):
+        """How many cards short of the smallest deck, or 0."""
+        return max(0, self.min_cards - self.total_cards)
 
     @property
     def allowed(self):
-        return not self.cards_over and not self.over_copy_limit
+        return not (
+            self.cards_over or self.cards_short or self.over_copy_limit
+            or self.short_side_decks)
 
 
 def _is_legendary_permanent(card):
@@ -71,34 +83,46 @@ def _is_legendary_permanent(card):
     return False
 
 
-def arena_deck_limits(deck):
-    """Measure ``deck``'s main deck against Proxic Arena's export limits."""
-    total = 0
+def arena_deck_limits(deck, rules_format):
+    """Measure ``deck``'s main board against ``rules_format`` (an ``ArenaFormat``)."""
     groups = {}
     for entry in deck.entries("main"):
         card = entry.get("card") or {}
         quantity = int(entry.get("qty", 0))
-        total += quantity
         stored = str(card.get("name") or "").strip()
-        key = normalize_card_name(front_face_name(stored))
-        if not key:
-            continue
+        # A card with no name still counts toward the deck's size.
+        key = card_key(stored) or object()
         bucket = groups.setdefault(
-            key, {"name": stored, "copies": 0, "cards": []})
+            key, {"name": stored, "copies": 0, "cards": [], "named": stored != ""})
         bucket["copies"] += quantity
         bucket["cards"].append(card)
 
+    total = 0
+    side_totals = {}
     over = []
     repeats = []
-    for bucket in groups.values():
-        limit = group_copy_limit(bucket["cards"], ARENA_COPY_LIMIT)
-        if limit is not None and bucket["copies"] > limit:
+    for key, bucket in groups.items():
+        section = rules_format.sections.get(key) if bucket["named"] else None
+        if section is None:
+            total += bucket["copies"]
+            limit = (None if key in rules_format.unlimited
+                     else rules_format.max_copies)
+        else:
+            side_totals[section] = side_totals.get(section, 0) + bucket["copies"]
+            limit = rules_format.side_decks[section][1]
+        if bucket["named"] and limit is not None and bucket["copies"] > limit:
             over.append((bucket["name"], bucket["copies"], limit))
         if bucket["copies"] > 1 and any(
                 _is_legendary_permanent(card) for card in bucket["cards"]):
             repeats.append((bucket["name"], bucket["copies"]))
+
+    short = [
+        (section, count, rules_format.side_decks[section][0])
+        for section, count in sorted(side_totals.items())
+        if count < rules_format.side_decks[section][0]]
     over.sort(key=lambda item: item[0].casefold())
     repeats.sort(key=lambda item: item[0].casefold())
     return ArenaDeckLimits(
-        total_cards=total, over_copy_limit=tuple(over),
-        legendary_repeats=tuple(repeats))
+        total_cards=total, min_cards=rules_format.min_cards,
+        max_cards=rules_format.max_cards, over_copy_limit=tuple(over),
+        short_side_decks=tuple(short), legendary_repeats=tuple(repeats))

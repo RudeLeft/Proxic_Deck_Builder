@@ -32,6 +32,7 @@ from mtgdb.ui.comparison_controls import ComparisonFeatureMixin
 from mtgdb.ui.components import AppMenubutton, ToolTip
 from mtgdb.ui.database_sync import DatabaseSyncMixin
 from mtgdb.ui.deck import DeckEditorMixin
+from mtgdb.ui.arena_connection import ArenaConnectionMixin
 from mtgdb.ui.arena_export import ArenaExportMixin
 from mtgdb.ui.deck_files import DeckFileWorkflowMixin
 from mtgdb.ui.deck_stats import DeckStatsMixin
@@ -56,6 +57,7 @@ log = logging.getLogger("mtg")
 class DeckBuilderApp(
         WorkspaceMixin, DatabaseSyncMixin, PrintingMixin,
         DeckEditorMixin, DeckFileWorkflowMixin, ArenaExportMixin,
+        ArenaConnectionMixin,
         DeckStatsMixin, ComparisonFeatureMixin,
         ManaSymbolsMixin, SetFilterSupportMixin,
         SearchFeatureMixin, TableFilterMixin, SearchResultsMixin,
@@ -235,6 +237,8 @@ class DeckBuilderApp(
         filemenu.add_command(label="Save Deck As...", command=self._save_deck)
         filemenu.add_command(
             label="Proxic Arena Export...", command=self._export_arena)
+        filemenu.add_command(
+            label="Proxic Arena Connection...", command=self._open_arena_connection)
         filemenu.add_command(label="Export JSON...", command=self._export_all_decks_json)
         filemenu.add_separator()
         filemenu.add_command(label="Close Deck", command=self._close_active_deck)

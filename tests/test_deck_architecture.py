@@ -30,12 +30,10 @@ from mtgdb.deck.analysis import front_face, is_land
 from mtgdb.deck.io import read_deck_text
 from mtgdb.deck.model import BOARDS, Deck
 from mtgdb.deck.arena_support import (
-    ASSET_VERSION, front_face_name, load_arena_support, load_supported_names,
-    normalize_card_name, unsupported_deck_names,
+    ArenaFormat, front_face_name, load_arena_rules, normalize_card_name,
+    rules_from_document, unsupported_deck_names,
 )
-from mtgdb.deck.arena_limits import (
-    ARENA_COPY_LIMIT, ARENA_MAX_CARDS, arena_deck_limits,
-)
+from mtgdb.deck.arena_limits import arena_deck_limits
 from mtgdb.deck.arena_tokens import deck_tokens
 
 
@@ -310,51 +308,41 @@ def _arena_name_key_check():
             "Delver of Secrets // Insectile Aberration")) == "delver_of_secrets")
 
 
-def _arena_unavailable_asset_check():
-    """DECK-012: an unusable asset reports nothing instead of raising."""
-    directory = tempfile.mkdtemp(prefix="mtg-arena-asset-")
+def _arena_unreadable_rules_check():
+    """DECK-012: a rules document that cannot be read reports nothing instead of raising."""
+    directory = tempfile.mkdtemp(prefix="mtg-arena-rules-")
     atexit.register(shutil.rmtree, directory, True)
     missing = Path(directory) / "absent.json"
-    wrong_version = Path(directory) / "wrong_version.json"
-    wrong_version.write_text(
-        json.dumps({"version": ASSET_VERSION + 1, "names": ["lightning_bolt"]}),
-        encoding="utf-8")
     malformed = Path(directory) / "malformed.json"
     malformed.write_text("{not json", encoding="utf-8")
-    not_a_list = Path(directory) / "shape.json"
-    not_a_list.write_text(
-        json.dumps({"version": ASSET_VERSION, "names": "lightning_bolt"}),
-        encoding="utf-8")
-    # A version 1 asset still answers the name question, with no printings.
-    version_one = Path(directory) / "version_one.json"
-    version_one.write_text(
-        json.dumps({"version": 1, "names": ["lightning_bolt"]}),
-        encoding="utf-8")
-    # A malformed printing table is dropped on its own; the names stay.
-    bad_printings = Path(directory) / "bad_printings.json"
-    bad_printings.write_text(
-        json.dumps({"version": ASSET_VERSION, "names": ["lightning_bolt"],
-                    "printings": {"lightning_bolt": "M10 146"},
-                    "set_codes": {}, "editions": {}}),
-        encoding="utf-8")
-    old = load_arena_support(version_one)
-    broken = load_arena_support(bad_printings)
+    good = {
+        "rulesVersion": "v1",
+        "format": {"minCards": 60, "maxCards": 65, "maxCopies": 4,
+                   "unlimitedCopies": ["plains"], "sideDecks": {}},
+        "cards": [{"name": "Lightning Bolt", "faces": ["Lightning Bolt"],
+                   "printings": ["M10 146"]}],
+        "editions": [{"code": "M10", "scryfallCode": "m10", "type": "CORE"}],
+        "setCodes": {"M10": "M10"},
+    }
+    part_missing = {key: value for key, value in good.items() if key != "setCodes"}
+    bad_format = dict(good, format={"minCards": "sixty"})
+    bad_cards = dict(good, cards="Lightning Bolt")
 
     deck = Deck("Arena Unknown", "modern")
     deck.add(_card("unknown", "Totally Unknown Card"), "main", 1)
     return (
-        load_supported_names(missing) == frozenset()
-        and load_supported_names(wrong_version) == frozenset()
-        and load_supported_names(malformed) == frozenset()
-        and load_supported_names(not_a_list) == frozenset()
-        and not load_arena_support(missing).knows_printings
-        and old.names == frozenset({"lightning_bolt"})
-        and not old.knows_printings
-        and broken.names == frozenset({"lightning_bolt"})
-        and not broken.knows_printings
+        not load_arena_rules(missing).known
+        and not load_arena_rules(malformed).known
+        and not rules_from_document(None).known
+        and not rules_from_document(part_missing).known
+        and not rules_from_document(bad_format).known
+        and not rules_from_document(bad_cards).known
+        and rules_from_document(good).known
+        and rules_from_document(good).support.names == frozenset({"lightning_bolt"})
         # No names known means nothing is claimed unplayable.
         and unsupported_deck_names(deck, frozenset()) == []
-        and unsupported_deck_names(deck, load_supported_names(missing)) == [])
+        and unsupported_deck_names(
+            deck, load_arena_rules(missing).support.names) == [])
 
 
 def _arena_deck_report_check():
@@ -396,12 +384,16 @@ def _arena_deck_report_check():
 
 
 def _arena_limits_check():
-    """ARN-007: the size and copy limits Proxic Arena export accepts.
+    """ARN-007: a deck is measured against Arena's format, as its rules state it.
 
-    The numbers are written out rather than read from the constants, so a
-    constant edited to the wrong value fails here instead of agreeing with
-    itself (VER-010).
+    The numbers are written out rather than read from the rules, so a rule
+    read wrongly fails here instead of agreeing with itself (VER-010).
     """
+    rules_format = ArenaFormat(
+        min_cards=60, max_cards=65, max_copies=4,
+        unlimited=frozenset({"plains", "island"}),
+        side_decks={"CONTRAPTIONS": (15, 1), "ATTRACTIONS": (10, 1)},
+        sections={f"gadget_{n}": "CONTRAPTIONS" for n in range(20)})
     plains = _card("plains", "Plains", type_line="Basic Land — Plains")
     rats = _card("rats", "Relentless Rats")
     rats["oracle_text"] = (
@@ -410,234 +402,138 @@ def _arena_limits_check():
     dwarves["oracle_text"] = (
         "A deck can have up to seven cards named Seven Dwarves.")
 
-    at_limit = Deck("At Limit", "modern")
-    at_limit.add(_card("bolt", "Lightning Bolt"), "main", 4)
-    at_limit.add(plains, "main", 96)
-    exact = arena_deck_limits(at_limit)
+    def deck_of(*parts):
+        deck = Deck("Probe", "modern")
+        for card, board, quantity in parts:
+            deck.add(card, board, quantity)
+        return arena_deck_limits(deck, rules_format)
 
-    one_over_size = Deck("One Over", "modern")
-    one_over_size.add(plains, "main", 101)
-    over_size = arena_deck_limits(one_over_size)
-
-    # The sideboard is not exported, so it counts toward neither limit: a
-    # 90-card deck with a 15-card sideboard (105 in all) is within the 100.
-    split = Deck("Split", "modern")
-    split.add(plains, "main", 90)
-    split.add(plains, "side", 9)
-    split.add(_card("bolt-side", "Lightning Bolt"), "side", 6)
-    split_limits = arena_deck_limits(split)
-
-    five = Deck("Five Bolts", "modern")
-    five.add(_card("bolt-a", "Lightning Bolt", set_code="lea"), "main", 4)
-    # A second printing still adds to the same name.
-    five.add(_card("bolt-b", "Lightning Bolt", set_code="m10"), "main", 1)
-    five_limits = arena_deck_limits(five)
-
-    faces = Deck("Faces", "modern")
-    faces.add(
-        _card("delver", "Delver of Secrets // Insectile Aberration"), "main", 3)
-    faces.add(_card("delver-front", "Delver of Secrets"), "main", 2)
-    face_limits = arena_deck_limits(faces)
-
-    exempt = Deck("Exempt", "modern")
-    exempt.add(rats, "main", 20)
-    exempt.add(dwarves, "main", 7)
-    exempt_limits = arena_deck_limits(exempt)
-
-    capped = Deck("Capped", "modern")
-    capped.add(dwarves, "main", 8)
-    capped_limits = arena_deck_limits(capped)
-
-    nameless = Deck("Nameless", "modern")
-    nameless.add(_card("blank", ""), "main", 9)
-    nameless_limits = arena_deck_limits(nameless)
+    bolt = _card("bolt", "Lightning Bolt")
+    smallest = deck_of((bolt, "main", 4), (plains, "main", 56))
+    largest = deck_of((bolt, "main", 4), (plains, "main", 61))
+    one_over = deck_of((plains, "main", 66))
+    one_short = deck_of((plains, "main", 59))
+    # The sideboard is not exported: a 60-card deck with 15 more beside it.
+    split = deck_of((plains, "main", 60), (bolt, "side", 15))
+    five = deck_of(
+        (_card("bolt-a", "Lightning Bolt", set_code="lea"), "main", 4),
+        (_card("bolt-b", "Lightning Bolt", set_code="m10"), "main", 1),
+        (plains, "main", 55))
+    faces = deck_of(
+        (_card("delver", "Delver of Secrets // Insectile Aberration"), "main", 3),
+        (_card("delver-front", "Delver of Secrets"), "main", 2),
+        (plains, "main", 55))
+    # Owner 2026-10-27: Arena's rule, basic lands only. Relentless Rats and
+    # Seven Dwarves are held to four, as Arena holds them.
+    any_number = deck_of((rats, "main", 20), (plains, "main", 40))
+    seven = deck_of((dwarves, "main", 7), (plains, "main", 53))
+    # Side decks: not in the 60, at least 15 Contraptions, one of each.
+    gadgets = [_card(f"g{n}", f"Gadget {n}") for n in range(20)]
+    with_side = deck_of((plains, "main", 60), *[(g, "main", 1) for g in gadgets[:15]])
+    short_side = deck_of((plains, "main", 60), *[(g, "main", 1) for g in gadgets[:14]])
+    doubled = deck_of(
+        (plains, "main", 60), (gadgets[0], "main", 2),
+        *[(g, "main", 1) for g in gadgets[1:15]])
+    nameless = deck_of((_card("blank", ""), "main", 9), (plains, "main", 51))
 
     def legend(card_id, name, type_line, set_code="tst"):
         return _card(card_id, name, type_line=type_line, set_code=set_code)
 
     mob_boss = "Krenko, Mob Boss"
     goblin = "Legendary Creature — Goblin Warrior"
-
-    # One of each legendary name is fine, however many different ones.
-    legend_ok = Deck("Legend OK", "modern")
-    legend_ok.add(legend("k1", mob_boss, goblin), "main", 1)
-    legend_ok.add(legend("k2", "Krenko, Tin Street Kingpin", goblin), "main", 1)
-    legend_ok_limits = arena_deck_limits(legend_ok)
-
-    # Two of one name is allowed, and reported: playing a second Krenko makes
-    # the player discard one, which is worth a warning and not a refusal.
-    legend_two = Deck("Legend Two", "modern")
-    legend_two.add(legend("k1", mob_boss, goblin), "main", 2)
-    legend_two_limits = arena_deck_limits(legend_two)
-
-    # Two printings of one name are one name to the legend rule.
-    legend_printings = Deck("Legend Printings", "modern")
-    legend_printings.add(legend("k1", mob_boss, goblin, "m20"), "main", 1)
-    legend_printings.add(legend("k2", mob_boss, goblin, "ima"), "main", 1)
-    legend_printings_limits = arena_deck_limits(legend_printings)
-
-    # A legendary card is still held to the ordinary four.
-    legend_five = Deck("Legend Five", "modern")
-    legend_five.add(legend("k1", mob_boss, goblin), "main", 5)
-    legend_five_limits = arena_deck_limits(legend_five)
-
-    # The sideboard is not exported, so its copies are not in play.
-    legend_side = Deck("Legend Side", "modern")
-    legend_side.add(legend("k1", mob_boss, goblin), "main", 1)
-    legend_side.add(legend("k1", mob_boss, goblin), "side", 3)
-    legend_side_limits = arena_deck_limits(legend_side)
-
-    # A legendary spell is not a permanent, so the legend rule never applies.
-    spell = legend("arc", "Legendary Spell", "Legendary Sorcery — Arcane")
-    spell_four = Deck("Spell Four", "modern")
-    spell_four.add(spell, "main", 4)
-    spell_four_limits = arena_deck_limits(spell_four)
-
-    land = legend("land", "Legend Land", "Legendary Land")
-    land_two = Deck("Land Two", "modern")
-    land_two.add(land, "main", 2)
-    land_two_limits = arena_deck_limits(land_two)
-
-    # Legendary on the back face alone still meets the rule once it transforms.
-    back = legend(
-        "back", "Hunter // Beast",
-        "Creature — Human // Legendary Creature — Werewolf")
-    back_two = Deck("Back Two", "modern")
-    back_two.add(back, "main", 2)
-    back_two_limits = arena_deck_limits(back_two)
+    legend_two = deck_of((legend("k1", mob_boss, goblin), "main", 2), (plains, "main", 58))
+    legend_printings = deck_of(
+        (legend("k1", mob_boss, goblin, "m20"), "main", 1),
+        (legend("k2", mob_boss, goblin, "ima"), "main", 1), (plains, "main", 58))
+    legend_five = deck_of((legend("k1", mob_boss, goblin), "main", 5), (plains, "main", 55))
+    legend_side = deck_of(
+        (legend("k1", mob_boss, goblin), "main", 1),
+        (legend("k1", mob_boss, goblin), "side", 3), (plains, "main", 59))
+    spell = deck_of(
+        (legend("arc", "Legendary Spell", "Legendary Sorcery — Arcane"), "main", 4),
+        (plains, "main", 56))
+    land = deck_of((legend("land", "Legend Land", "Legendary Land"), "main", 2), (plains, "main", 58))
+    back = deck_of(
+        (legend("back", "Hunter // Beast",
+                "Creature — Human // Legendary Creature — Werewolf"), "main", 2),
+        (plains, "main", 58))
 
     return (
-        ARENA_MAX_CARDS == 100
-        and ARENA_COPY_LIMIT == 4
-        # Exactly at both limits is allowed.
-        and exact.total_cards == 100 and exact.allowed
-        # One card past the size limit is refused, and says by how many.
-        and over_size.total_cards == 101 and over_size.cards_over == 1
-        and not over_size.allowed and over_size.over_copy_limit == ()
-        and split_limits.total_cards == 90 and split_limits.allowed
-        # A fifth copy is refused, across printings.
-        and five_limits.over_copy_limit == (("Lightning Bolt", 5, 4),)
-        and not five_limits.allowed
-        # A double-faced card and its front face are one name to Arena.
-        and len(face_limits.over_copy_limit) == 1
-        and face_limits.over_copy_limit[0][1:] == (5, 4)
-        # Basic lands, "any number" cards and an "up to seven" card at seven.
-        and exempt_limits.allowed
-        # The card's own cap applies, not the generic four.
-        and capped_limits.over_copy_limit == (("Seven Dwarves", 8, 7),)
+        # Both ends of the size are allowed, and one past either is refused.
+        smallest.allowed and smallest.total_cards == 60
+        and largest.allowed and largest.total_cards == 65
+        and not one_over.allowed and one_over.cards_over == 1
+        and not one_short.allowed and one_short.cards_short == 1
+        and (one_over.min_cards, one_over.max_cards) == (60, 65)
+        and split.allowed and split.total_cards == 60
+        # A fifth copy is refused, across printings and faces.
+        and five.over_copy_limit == (("Lightning Bolt", 5, 4),)
+        and len(faces.over_copy_limit) == 1 and faces.over_copy_limit[0][1:] == (5, 4)
+        # Basic lands only are exempt.
+        and largest.over_copy_limit == ()
+        and any_number.over_copy_limit == (("Relentless Rats", 20, 4),)
+        and seven.over_copy_limit == (("Seven Dwarves", 7, 4),)
+        # Side decks: out of the main count, a smallest size, one of each.
+        and with_side.allowed and with_side.total_cards == 60
+        and short_side.short_side_decks == (("CONTRAPTIONS", 14, 15),)
+        and not short_side.allowed
+        and doubled.over_copy_limit == (("Gadget 0", 2, 1),)
         # Legendary permanents may repeat: allowed, and reported by name.
-        and legend_ok_limits.allowed and legend_ok_limits.legendary_repeats == ()
-        and legend_two_limits.allowed
-        and legend_two_limits.legendary_repeats == ((mob_boss, 2),)
-        # Two printings are one name to the legend rule.
-        and legend_printings_limits.allowed
-        and legend_printings_limits.legendary_repeats == ((mob_boss, 2),)
-        # Five is refused by the ordinary four, not by anything legendary.
-        and legend_five_limits.over_copy_limit == ((mob_boss, 5, 4),)
-        and not legend_five_limits.allowed
-        # The sideboard is not exported, so its copies are never in play.
-        and legend_side_limits.allowed and legend_side_limits.legendary_repeats == ()
-        # A legendary instant or sorcery never enters play: not listed.
-        and spell_four_limits.allowed and spell_four_limits.legendary_repeats == ()
-        # A land is a permanent, and a back face counts once it transforms.
-        and land_two_limits.legendary_repeats == (("Legend Land", 2),)
-        and back_two_limits.legendary_repeats == (("Hunter // Beast", 2),)
-        # Plain cards and basic lands never read as legendary repeats.
-        and five_limits.legendary_repeats == () and exact.legendary_repeats == ()
+        and legend_two.allowed and legend_two.legendary_repeats == ((mob_boss, 2),)
+        and legend_printings.legendary_repeats == ((mob_boss, 2),)
+        and legend_five.over_copy_limit == ((mob_boss, 5, 4),)
+        and legend_side.allowed and legend_side.legendary_repeats == ()
+        and spell.allowed and spell.legendary_repeats == ()
+        and land.legendary_repeats == (("Legend Land", 2),)
+        and back.legendary_repeats == (("Hunter // Beast", 2),)
+        and five.legendary_repeats == ()
         # A nameless entry counts toward size and cannot be listed as a card.
-        and nameless_limits.total_cards == 9 and nameless_limits.allowed)
+        and nameless.total_cards == 60 and nameless.allowed)
 
 
-def _arena_shipped_asset_check():
-    """DECK-012: the shipped asset is loadable and already normalized."""
-    path = ROOT / "assets/arena/supported_cards.json"
+def _arena_shipped_rules_check():
+    """DECK-012: the built-in copy is Arena's own document, read in full."""
+    path = ROOT / "assets/arena/deck_rules.json"
     if not path.is_file():
         return False
     payload = json.loads(path.read_text(encoding="utf-8"))
-    names = load_supported_names(path)
-    support = load_arena_support(path)
-    printings = support.printings
+    rules = load_arena_rules(path)
+    support = rules.support
+    rules_format = rules.format
     return (
-        payload["version"] == ASSET_VERSION
-        and payload["name_count"] == len(payload["names"])
-        and len(names) == payload["name_count"]
-        and len(names) > 1000
-        # Keys ship already normalized, so a lookup needs no second pass.
-        and all(normalize_card_name(name) == name
-                for name in sorted(names)[:500])
-        and "lightning_bolt" in names
-        # Printings ship for the cards, keyed the same way, each in an edition
-        # the asset describes.
-        and support.knows_printings
-        and len(printings) > 1000
-        and "M21 263" in printings["island"]
-        and "UNF 178" in printings["space_beleren"]
-        and all(printing.split(" ", 1)[0] in support.editions
-                for found in printings.values() for printing in found)
-        # Forge's lookup takes an edition's code, alias or second code -- Conflux
-        # is CFX, also CON -- and never a Scryfall code alone: UGIN is refused.
+        rules.known
+        # As Arena served it: its own version and the release it came from.
+        and payload["rulesVersion"] == rules.rules_version != ""
+        and rules.forge_release.startswith("forge-")
+        and len(support.names) > 30000
+        and "lightning_bolt" in support.names
+        # A back face's name is a playable name too.
+        and "insectile_aberration" in support.names
+        # A card's own printings, never another card's that shares a face name.
+        and "M10 146" in support.printings["lightning_bolt"]
+        and "M21 263" in support.printings["island"]
+        # Forge's lookup: a second code finds its edition, a Scryfall code alone does not.
         and support.set_codes.get("CON") == "CFX"
-        and support.set_codes.get("M21") == "M21"
         and "UGIN" not in support.set_codes
-        and support.editions["UGF"][0] == "ugin")
+        and support.editions["UGF"][0] == "ugin"
+        # The format, with the basic lands the only exemption.
+        and (rules_format.min_cards, rules_format.max_cards, rules_format.max_copies) == (60, 65, 4)
+        and {"plains", "island", "snow_covered_forest"} <= rules_format.unlimited
+        and "relentless_rats" not in rules_format.unlimited
+        and rules_format.side_decks.get("CONTRAPTIONS") == (15, 1)
+        and "CONTRAPTIONS" in set(rules_format.sections.values()))
 
 
-def _arena_refresh_script_check():
-    """DECK-012: the refresh tool's contract, checked without the Arena tree.
-
-    It reads a tree outside this repository, so this check never runs it: it
-    establishes that the tool exists, compiles, derives its keys from the one
-    runtime owner instead of a second spelling of the rule, refuses to replace
-    a complete asset with a near-empty one, and stays outside the `test_*.py`
-    pattern the release suite runs.
-    """
-    script = ROOT / "tests/arena_support_refresh.py"
-    if not script.is_file() or script.name.startswith("test_"):
-        return False
-    source = script.read_text(encoding="utf-8")
-    try:
-        compile(source, str(script), "exec")
-    except SyntaxError:
-        return False
+def _no_forge_tooling_check():
+    """DECK-012, VER-015: nothing here rebuilds a card list from Forge or watches it."""
+    deck_sources = "".join(
+        path.read_text(encoding="utf-8") for path in (ROOT / "mtgdb").rglob("*.py"))
     return (
-        # One owner for the key rule and the asset's version and location.
-        "from mtgdb.deck.arena_support import" in source
-        and "normalize_card_name" in source
-        and "front_face_name" in source
-        and "ASSET_VERSION" in source
-        and "ARENA_SUPPORTED_CARDS_FILE" in source
-        # Names come from the scripts' own Name: lines, never from filenames,
-        # because a filename is a lossy spelling that cannot be reversed.
-        and 'NAME_PREFIX = "Name:"' in source
-        and "<Unsupported Variant>" in source
-        # A credible-size floor, so an unreadable or wrong tree cannot quietly
-        # replace a complete asset with a handful of names.
-        and "MINIMUM_CREDIBLE_NAMES" in source
-        # A compare-only mode, which is the question to ask after an Arena bump.
-        and '"--check"' in source
-        # The scripts' location is a required argument. This repository never
-        # names the other project's folder, so there is no default to rot when
-        # that project reorganizes.
-        and '"--cardsfolder"' in source
-        and "required=True" in source
-        and "DEFAULT_CARDSFOLDER" not in source
-        and "Proxic_Arena" not in source
-        # The editions, too, have no default, and are needed to write.
-        and '"--editions"' in source
-        and 'parser.error("--editions is required to write the asset")'
-        in source
-        # Printings are read by Forge's own edition rule: its card-line
-        # pattern and printing sections, and its code precedence, never the
-        # Scryfall code as an accepted set code.
-        and "CARD_LINE = re.compile(" in source
-        and "PRINTING_SECTIONS = frozenset(" in source
-        and 'metadata.get("code2")' in source
-        and 'metadata.get("alias")' in source
-        and "set_codes.setdefault(accepted, code)" in source
-        and "MINIMUM_CREDIBLE_PRINTINGS" in source
-        and "PRINTING_SEPARATOR" in source
-        # .gitattributes pins LF for this tree, so the asset is written with it.
-        and r'newline="\n"' in source)
+        not (ROOT / "tests/arena_support_refresh.py").exists()
+        and not (ROOT / ".github/workflows/forge-update-check.yml").exists()
+        and not (ROOT / "assets/arena/supported_cards.json").exists()
+        and "cardsfolder" not in deck_sources
+        and "res/editions" not in deck_sources)
 
 
 def _arena_tokens_check():
@@ -701,55 +597,6 @@ def _arena_tokens_check():
         and "Zombie" not in [token.name for token in found]
         and "Emblem" not in " ".join(token.type_line for token in found)
         and deck_tokens(empty) == ())
-
-
-def _forge_update_workflow_check():
-    """VER-015: upstream Forge's card scripts and editions are compared weekly.
-
-    The workflow runs on GitHub, so this establishes its contract from the file
-    alone: what it checks out, which tool does the comparing, how a stale list
-    is told apart from a broken check, and that it only ever reports.
-    """
-    workflow = ROOT / ".github/workflows/forge-update-check.yml"
-    script = ROOT / "tests/arena_support_refresh.py"
-    if not workflow.is_file() or not script.is_file():
-        return False
-    text = workflow.read_text(encoding="utf-8")
-    tool = script.read_text(encoding="utf-8")
-    return (
-        "workflow_dispatch:" in text and "schedule:" in text
-        # The card scripts and editions of ONE Forge checkout, at Forge's
-        # latest release -- what Arena moves to -- and nothing else of Forge,
-        # never its unreleased work.
-        and "repository: Card-Forge/forge" in text
-        and "repos/Card-Forge/forge/releases/latest --jq .tag_name" in text
-        and "ref: ${{ steps.release.outputs.tag }}" in text
-        and text.count("repository: Card-Forge/forge") == 1
-        and "            forge-gui/res/cardsfolder\n" in text
-        and "            forge-gui/res/editions\n" in text
-        and "forge-upstream" not in text
-        # The one tool that owns the name and printing rules, compare-only,
-        # given the editions so a printing change is seen as well as a name.
-        and "python tests/arena_support_refresh.py" in text
-        and "--cardsfolder forge-release/forge-gui/res/cardsfolder" in text
-        and "--editions forge-release/forge-gui/res/editions --check" in text
-        and "--check" in text
-        # A behind list is a result and a broken check is a failure, told apart
-        # by a marker the tool really prints.
-        and "grep -q '^STALE:'" in text
-        and 'print("\\nSTALE:' in tool
-        # The owner is told by an issue GitHub emails: assigned and mentioned.
-        and "issues: write" in text
-        and "gh issue create" in text
-        and "--assignee" in text
-        and "@%s" in text
-        # Kept current while open, and closed once the list matches again.
-        and "gh issue edit" in text
-        and "gh issue close" in text
-        # It reports. Rebuilding the list stays with a person.
-        and "contents: read" in text
-        and "git push" not in text
-        and "gh pr " not in text)
 
 
 def _import_roots(source):
@@ -1155,27 +1002,25 @@ def main():
             not ({"re", "json", "math", "random"} & imports["mtgdb/deck/model.py"])),
         "Arena lookup keys mirror the Proxic Arena name rule":
             _arena_name_key_check(),
-        "an unusable Arena name asset reports nothing rather than raising":
-            _arena_unavailable_asset_check(),
+        "an unreadable Arena rules document reports nothing rather than raising":
+            _arena_unreadable_rules_check(),
         "a saved deck reports only the names Proxic Arena cannot play":
             _arena_deck_report_check(),
-        "Arena export limits count both boards, merge printings, and honor exemptions":
+        "Arena export limits follow Arena's format: size, copies, side decks":
             _arena_limits_check(),
-        "the shipped Arena name asset is loadable and pre-normalized":
-            _arena_shipped_asset_check(),
-        "the Arena name asset has a refresh tool with a safe contract":
-            _arena_refresh_script_check(),
+        "the built-in Arena rules are Arena's own document, read in full":
+            _arena_shipped_rules_check(),
+        "no Forge card list is built or watched here":
+            _no_forge_tooling_check(),
         "the tokens a deck's cards can create are found once each, main deck only":
             _arena_tokens_check(),
-        "a weekly Forge check compares upstream card scripts and only reports":
-            _forge_update_workflow_check(),
-        "the Arena asset location belongs to the shared asset owner": (
-            'ARENA_SUPPORTED_CARDS_FILE = "arena/supported_cards.json"'
+        "the Arena rules location belongs to the shared asset owner": (
+            'ARENA_DECK_RULES_FILE = "arena/deck_rules.json"'
             in (ROOT / "mtgdb/ui/assets.py").read_text(encoding="utf-8")
-            # Neither the consumer nor the comparison spells the path itself.
-            and "arena/supported_cards.json" not in
+            # Neither the consumer nor the reader spells the path itself.
+            and "arena/deck_rules.json" not in
             (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
-            and "arena/supported_cards.json" not in
+            and "arena/deck_rules.json" not in
             sources_by_name["mtgdb/deck/arena_support.py"]),
         "production UI imports each deck responsibility from its owner": (
             "from mtgdb.deck.model import Deck" in sources_by_name["mtgdb/ui/app.py"]

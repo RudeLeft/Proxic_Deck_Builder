@@ -6,35 +6,39 @@ download -- so it is its own UI module with its own cluster row rather than a
 boundary break inside `ui/deck_files.py` (LAYER-006).
 
 It owns no file format and no name rule: the zip layout and Arena's art naming
-belong to `arena/export.py`, the playable-name comparison to
-`deck/arena_support.py`, which printing each card is exported as to
-`deck/arena_printings.py`, the size and copy limits to `deck/arena_limits.py`,
-the tokens a deck can create to `deck/arena_tokens.py`, and the PNG download,
-cache, face handling and HTTP policy to `printing/service.py`.
+belong to `arena/export.py`, which deck rules apply (downloaded from a linked
+Arena, saved, or built in) to `arena/connection.py`, reading them and the
+playable-name comparison to `deck/arena_support.py`, which printing each card
+is exported as to `deck/arena_printings.py`, the size and copy limits to
+`deck/arena_limits.py`, the tokens a deck can create to `deck/arena_tokens.py`,
+and the PNG download, cache, face handling and HTTP policy to
+`printing/service.py`.
 """
 
 import logging
 import os
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+from mtgdb.arena.connection import (
+    SOURCE_ARENA, SOURCE_BUILT_IN, ArenaConnectionStore, obtain_rules,
+)
 from mtgdb.arena.export import (
     ArenaExportJob, build_export, distinct_art_cards,
 )
-from mtgdb.deck.arena_limits import (
-    ARENA_COPY_LIMIT, ARENA_MAX_CARDS, arena_deck_limits,
-)
+from mtgdb.deck.arena_limits import arena_deck_limits
 from mtgdb.deck.arena_printings import arena_export_deck
 from mtgdb.deck.arena_support import (
-    load_arena_support, unsupported_deck_names,
+    rules_from_document, unsupported_deck_names,
 )
 from mtgdb.deck.arena_tokens import deck_tokens
 from mtgdb.deck.file_jobs import submit_deck_file_job
 from mtgdb.deck.io import deck_to_text
 from mtgdb.printing.service import back_faces, ensure_face_png, ensure_png
-from mtgdb.ui.assets import ARENA_SUPPORTED_CARDS_FILE, _asset_path
+from mtgdb.ui.assets import ARENA_DECK_RULES_FILE, _asset_path
 from mtgdb.ui.components import AppButton, autohide_scrollbar
 from mtgdb.ui.tokens import FONT_BODY, PALETTE
 
@@ -47,11 +51,6 @@ ARENA_WARNING_LEAD = (
     "The following cards in your deck are not in the Proxic Arena card pool "
     "and will not play properly")
 ARENA_WARNING_CLOSING = "The rest of the deck will play without issue."
-ARENA_LIMIT_LEAD = (
-    "This deck can't be exported for Proxic Arena yet. Proxic Arena accepts "
-    f"up to {ARENA_MAX_CARDS} cards, with no more than {ARENA_COPY_LIMIT} "
-    "copies of any card (basic lands and cards that allow any number of "
-    "copies are exempt).")
 ARENA_LIMIT_CLOSING = "Nothing was exported. Adjust the deck and try again."
 # Legendary cards named inline before the rest are counted: the warning is a
 # paragraph in the report, not a list, so it is kept short.
@@ -66,25 +65,75 @@ ARENA_PRINTING_INTRO = (
     "does have. Your saved deck keeps your own printings:")
 
 
-def arena_limit_text(limits):
+# A side deck's name, as one of its cards is called.
+_SIDE_DECK_WORDS = {"CONTRAPTIONS": "Contraption", "ATTRACTIONS": "Attraction"}
+
+
+def arena_limit_lead(rules_format):
+    """The refusal's first sentence, with Arena's own numbers in it."""
+    return (
+        "This deck can't be exported for Proxic Arena yet. Proxic Arena "
+        f"accepts {rules_format.min_cards} to {rules_format.max_cards} cards, "
+        f"with no more than {rules_format.max_copies} copies of any card "
+        "(basic lands are exempt).")
+
+
+def arena_limit_text(limits, rules_format):
     """Return the refusal's lead line, listed problems, overflow count, closing.
 
     Composed apart from the widgets, like the unplayable-card notice, so the
     sentences are checked without a Tk root. Each listed line is one problem in
-    plain words: the deck's size, then each over-limit card by name.
+    plain words: the deck's size, each over-limit card by name, then each side
+    deck that is too small.
     """
     lines = []
     if limits.cards_over:
         lines.append(
             f"Deck size: {limits.total_cards} cards, {limits.cards_over} over "
-            f"the {ARENA_MAX_CARDS}-card limit")
+            f"the {limits.max_cards}-card limit")
+    if limits.cards_short:
+        lines.append(
+            f"Deck size: {limits.total_cards} cards, {limits.cards_short} short "
+            f"of the {limits.min_cards}-card minimum")
     for name, copies, allowed in limits.over_copy_limit:
         lines.append(
             f"{name}: {copies} copies, {copies - allowed} over the limit "
             f"of {allowed}")
+    for section, count, least in limits.short_side_decks:
+        word = _SIDE_DECK_WORDS.get(section, section.title())
+        lines.append(
+            f"{word} deck: {count} cards; Proxic Arena needs at least {least} "
+            f"{word}s, or none")
     shown = lines[:ARENA_WARNING_NAME_LIMIT]
-    return (ARENA_LIMIT_LEAD, shown, len(lines) - len(shown),
+    return (arena_limit_lead(rules_format), shown, len(lines) - len(shown),
             ARENA_LIMIT_CLOSING)
+
+
+def arena_rules_note(obtained):
+    """Where this export's deck rules came from, in plain words, or "".
+
+    Nothing is said when Arena itself answered, which is the ordinary case.
+    """
+    if obtained is None or obtained.source == SOURCE_ARENA:
+        return ""
+    if obtained.unlinked:
+        return (
+            "Proxic Arena no longer accepts this computer's link (it was "
+            "removed on Arena), so it was unlinked here and this export used "
+            "the deck rules saved earlier. Link it again under File > Proxic "
+            "Arena Connection.")
+    if obtained.source == SOURCE_BUILT_IN:
+        return (
+            "This computer is not linked to Proxic Arena, so this export used "
+            "the deck rules built into this version. Link it under File > "
+            "Proxic Arena Connection to always use Arena's current rules.")
+    when = ""
+    if obtained.saved_at:
+        when = " on " + time.strftime(
+            "%b %d", time.localtime(obtained.saved_at))
+    return (
+        "Proxic Arena could not be reached, so this export used the deck "
+        f"rules downloaded{when}.")
 
 
 def arena_sideboard_note(count):
@@ -234,14 +283,45 @@ class ArenaExportMixin:
 
         # One snapshot is measured and then exported, so the deck that passed
         # is the deck that is written, however long the save prompt stays open.
-        # Refused before asking where to save: a deck Arena will not accept
-        # should never reach a file dialog. The measurement is in-memory, so it
-        # needs no worker (DUI-017 concerns file work).
         detached = self._detached_deck_copy(deck)
-        limits = arena_deck_limits(detached)
-        if not limits.allowed:
-            self._show_arena_list_dialog(*arena_limit_text(limits))
-            return
+        store = ArenaConnectionStore(self.data_dir)
+        built_in = _asset_path(ARENA_DECK_RULES_FILE)
+
+        def read_rules():
+            # Asking Arena is network work, and reading the document is a few
+            # megabytes of JSON: both on the worker, never on Tk (DUI-017).
+            obtained = obtain_rules(
+                store, built_in, lambda payload: rules_from_document(payload).known)
+            return obtained, rules_from_document(obtained.payload)
+
+        def checked(outcome):
+            obtained, rules = outcome
+            if obtained.unlinked:
+                log.info("Proxic Arena refused this computer's link; unlinked")
+            self._status("")
+            self._continue_arena_export(deck, detached, rules, obtained)
+
+        self._status("Checking Proxic Arena's deck rules\u2026")
+        future = submit_deck_file_job(read_rules, name="mtg-arena-rules")
+        self._poll_deck_file_job(
+            future, checked, error_title="Proxic Arena export failed")
+
+    def _continue_arena_export(self, deck, detached, rules, obtained):
+        """Refuse, or ask where to save and write the bundle, by the rules just read."""
+        note = arena_rules_note(obtained)
+        legendary_repeats = ()
+        # Refused before asking where to save: a deck Arena will not accept
+        # should never reach a file dialog. With no rules at all (a damaged
+        # install) nothing is refused, as nothing is known.
+        if rules.known:
+            limits = arena_deck_limits(detached, rules.format)
+            if not limits.allowed:
+                lead, shown, remaining, closing = arena_limit_text(limits, rules.format)
+                if note:
+                    closing = f"{closing}\n\n{note}"
+                self._show_arena_list_dialog(lead, shown, remaining, closing)
+                return
+            legendary_repeats = limits.legendary_repeats
 
         path = filedialog.asksaveasfilename(
             title="Proxic Arena Export", defaultextension=".zip",
@@ -251,10 +331,10 @@ class ArenaExportMixin:
             return
 
         sideboard_count = detached.total("side")
-        legendary_repeats = limits.legendary_repeats
         tokens = deck_tokens(detached)
         cache_dir = os.path.join(self.image_cache_dir, "print_png")
         printings_named = self.db.printings_named
+        support = rules.support
         cancel_event = threading.Event()
         # Progress crosses threads through a queue rather than a Tk call from
         # the worker; Tk polls it (BEH-002).
@@ -263,8 +343,6 @@ class ArenaExportMixin:
         def run_export():
             def report(stage, current, total, detail):
                 progress.put((stage, current, total, detail))
-            support = load_arena_support(
-                _asset_path(ARENA_SUPPORTED_CARDS_FILE))
             unsupported = unsupported_deck_names(
                 detached, support.names, boards=("main",))
             # The printings Arena checks are chosen here, on the worker,
@@ -285,13 +363,14 @@ class ArenaExportMixin:
             result, unsupported, swaps = outcome
             log.info(
                 "Arena export wrote %s: %d images for %d cards, %d without art,"
-                " %d unplayable, %d printings changed", result.output_path,
-                result.image_count, result.card_count,
-                len(result.missing_art), len(unsupported), len(swaps))
+                " %d unplayable, %d printings changed, rules from %s",
+                result.output_path, result.image_count, result.card_count,
+                len(result.missing_art), len(unsupported), len(swaps),
+                obtained.source)
             self._status(f"Exported {os.path.basename(result.output_path)}")
             self._report_arena_export(
                 result, unsupported, sideboard_count, legendary_repeats,
-                tokens, swaps)
+                tokens, swaps, note)
 
         self._status("Exporting for Proxic Arena\u2026")
         popup = self._show_arena_export_progress(
@@ -301,7 +380,6 @@ class ArenaExportMixin:
         self._poll_deck_file_job(
             future, exported, error_title="Proxic Arena export failed",
             on_error=self._close_arena_export_progress)
-
 
     def _show_arena_export_progress(self, total, cancel_event):
         """Open the dark export progress popup and return it."""
@@ -390,7 +468,7 @@ class ArenaExportMixin:
 
     def _report_arena_export(
             self, result, unsupported, sideboard_count=0,
-            legendary_repeats=(), tokens=(), swaps=()):
+            legendary_repeats=(), tokens=(), swaps=(), rules_note=""):
         """Report what the bundle holds, and what Arena still cannot play.
 
         One dialog rather than two: the write, the playability answer, the note
@@ -417,6 +495,8 @@ class ArenaExportMixin:
                 f"{closing}\n\nNo art could be downloaded for "
                 f"{len(result.missing_art)} card(s); Proxic Arena draws its "
                 "own for those.")
+        if rules_note:
+            closing = f"{closing}\n\n{rules_note}"
         sections = [
             section for section in (
                 arena_printing_section(swaps), arena_token_section(tokens))

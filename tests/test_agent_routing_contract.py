@@ -40,12 +40,16 @@ SOURCE_MARKERS = {
     "mtgdb/deck/arena_support.py": (
         "def normalize_card_name(", "def unsupported_deck_names("),
     "mtgdb/deck/arena_limits.py": (
-        "ARENA_MAX_CARDS =", "def arena_deck_limits("),
+        "class ArenaDeckLimits", "def arena_deck_limits("),
     "mtgdb/deck/arena_tokens.py": (
         "class ArenaToken", "def deck_tokens("),
     "mtgdb/deck/arena_printings.py": (
         "def printing_accepted(", "def arena_export_deck("),
     "mtgdb/arena/export.py": ("def art_filename(", "def build_export("),
+    "mtgdb/arena/connection.py": ("def link_computer(", "def obtain_rules("),
+    "mtgdb/ui/arena_connection.py": (
+        "class ArenaConnectionMixin", "def _open_arena_connection("),
+    "mtgdb/core/secret_store.py": ("def write_secret(", "def read_secret("),
     "mtgdb/deck/sessions.py": ("class DeckSession", "class DeckSessionManager"),
     "mtgdb/database/authorities.py": ("CATALOG_AUTHORITIES =", "SUBTYPE_AUTHORITIES ="),
     "mtgdb/database/constants.py": ("CONTENT_TYPES =", "PLAYABLE_LEGALITY_STATUSES"),
