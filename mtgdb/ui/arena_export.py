@@ -34,7 +34,7 @@ from mtgdb.deck.arena_printings import arena_export_deck
 from mtgdb.deck.arena_support import (
     rules_from_document, unsupported_deck_names,
 )
-from mtgdb.deck.arena_tokens import deck_tokens
+from mtgdb.deck.arena_tokens import deck_tokens, without_game_pieces
 from mtgdb.deck.file_jobs import submit_deck_file_job
 from mtgdb.deck.io import deck_to_text
 from mtgdb.printing.service import back_faces, ensure_face_png, ensure_png
@@ -56,8 +56,8 @@ ARENA_LIMIT_CLOSING = "Nothing was exported. Adjust the deck and try again."
 # paragraph in the report, not a list, so it is kept short.
 ARENA_LEGENDARY_NAME_LIMIT = 6
 ARENA_TOKEN_INTRO = (
-    "These cards in your deck can create tokens. Tokens are not included in "
-    "the export, so add card art for them yourself if you want it:")
+    "Good to know: these cards make tokens during a game. Proxic Arena makes "
+    "the tokens itself, so there is nothing to add:")
 # Deck cards named against each token before the rest are counted.
 ARENA_TOKEN_MAKER_LIMIT = 3
 ARENA_PRINTING_INTRO = (
@@ -107,6 +107,23 @@ def arena_limit_text(limits, rules_format):
     shown = lines[:ARENA_WARNING_NAME_LIMIT]
     return (arena_limit_lead(rules_format), shown, len(lines) - len(shown),
             ARENA_LIMIT_CLOSING)
+
+
+def arena_game_piece_note(names):
+    """The sentence saying which tokens were left out of the deck, or "".
+
+    Arena makes tokens during the game and refuses a decklist that names one,
+    so they are never exported and never count toward the deck's size.
+    """
+    if not names:
+        return ""
+    listed = ", ".join(names[:ARENA_LEGENDARY_NAME_LIMIT])
+    if len(names) > ARENA_LEGENDARY_NAME_LIMIT:
+        listed += f" and {len(names) - ARENA_LEGENDARY_NAME_LIMIT} more"
+    return (
+        "Tokens aren't cards in a Proxic Arena deck: Arena makes them during "
+        f"the game. So these were left out, and don't count toward the deck's "
+        f"size: {listed}.")
 
 
 def arena_rules_note(obtained):
@@ -283,7 +300,13 @@ class ArenaExportMixin:
 
         # One snapshot is measured and then exported, so the deck that passed
         # is the deck that is written, however long the save prompt stays open.
-        detached = self._detached_deck_copy(deck)
+        # Tokens the player put in the deck are left out of both (ARN-013).
+        detached, game_pieces = without_game_pieces(self._detached_deck_copy(deck))
+        if not detached.total("main"):
+            self._show_arena_list_dialog(
+                "This deck has no cards in its main deck to export yet.",
+                [], 0, arena_game_piece_note(game_pieces))
+            return
         store = ArenaConnectionStore(self.data_dir)
         built_in = _asset_path(ARENA_DECK_RULES_FILE)
 
@@ -299,16 +322,18 @@ class ArenaExportMixin:
             if obtained.unlinked:
                 log.info("Proxic Arena refused this computer's link; unlinked")
             self._status("")
-            self._continue_arena_export(deck, detached, rules, obtained)
+            self._continue_arena_export(deck, detached, rules, obtained, game_pieces)
 
         self._status("Checking Proxic Arena's deck rules\u2026")
         future = submit_deck_file_job(read_rules, name="mtg-arena-rules")
         self._poll_deck_file_job(
             future, checked, error_title="Proxic Arena export failed")
 
-    def _continue_arena_export(self, deck, detached, rules, obtained):
+    def _continue_arena_export(self, deck, detached, rules, obtained, game_pieces=()):
         """Refuse, or ask where to save and write the bundle, by the rules just read."""
-        note = arena_rules_note(obtained)
+        note = "\n\n".join(
+            part for part in (arena_game_piece_note(game_pieces), arena_rules_note(obtained))
+            if part)
         legendary_repeats = ()
         # Refused before asking where to save: a deck Arena will not accept
         # should never reach a file dialog. With no rules at all (a damaged

@@ -229,7 +229,7 @@ only in the module that owns X.
 | `mtgdb/deck/sessions.py` | Typed open-deck sessions, active-index lifecycle, dirty state, default-session enforcement |
 | `mtgdb/deck/arena_support.py` | The normalized Proxic Arena card-name key, reading Arena's deck rules document (the cards and printings it plays, the set codes it accepts, its format's limits), and deciding which of a deck's names Proxic Arena holds no card script for |
 | `mtgdb/deck/arena_limits.py` | Measuring a deck against Arena's format as its rules state it -- the deck's size, copies per name with only the listed basic lands exempt, the Contraption and Attraction side decks -- and finding the legendary permanents a deck holds more than once |
-| `mtgdb/deck/arena_tokens.py` | Finding which tokens the cards of a deck can create, from each card's Scryfall related parts, grouped by token with the deck cards that make it |
+| `mtgdb/deck/arena_tokens.py` | Finding which tokens the cards of a deck can create, from each card's Scryfall related parts, grouped by token with the deck cards that make it; and which deck entries are tokens, emblems or art cards to leave out of the export |
 | `mtgdb/deck/arena_printings.py` | Deciding whether Proxic Arena accepts a card's printing by Forge's own rule, and which printing Forge has to export instead: same set first, then the newest ordinary one Scryfall can picture, else the name alone |
 | `mtgdb/arena/export.py` | Proxic Arena bundle contents: the art filename Arena indexes, one image per distinct card name, and the durable zip holding the decklist beside `real_cards/` |
 | `mtgdb/arena/connection.py` | This computer's link to a Proxic Arena: the Arena address rule, trading a one-time code for a device token, keeping the link and its sealed token, downloading the deck rules and choosing between the fresh, saved and built-in copies |
@@ -315,7 +315,7 @@ have at least two routing examples.
 | `mtgdb/deck/sessions.py` | change active-deck switching/default-session rules<br>change dirty-state or open-session lifecycle | `mtgdb/deck/model.py`; `mtgdb/ui/deck.py`; `mtgdb/ui/workspace.py` | Do not persist workspace files or manipulate widgets here. |
 | `mtgdb/deck/arena_support.py` | change which names count as playable in Proxic Arena<br>change how a decklist is checked against the Proxic Arena card pool<br>change how Arena's deck rules document is read | `mtgdb/ui/arena_export.py`; `mtgdb/arena/connection.py`; `mtgdb/deck/model.py` | Reading and name keys only: fetching and saving the rules belong to the connection, which printing is exported to arena printings, and the notice's wording to the Arena export UI; nothing here judges format legality or deck construction outside Arena. |
 | `mtgdb/deck/arena_limits.py` | change how a deck is measured against Arena's card count or copy limit<br>change how the Contraption and Attraction side decks are counted for the export<br>change which repeated legendary cards Proxic Arena export warns about | `mtgdb/ui/arena_export.py`; `mtgdb/deck/arena_support.py`; `mtgdb/deck/model.py` | Measurement only: the numbers come from Arena's rules document, the refusal's wording and dialog belong to the Arena export UI, and the name key to arena support. |
-| `mtgdb/deck/arena_tokens.py` | change which tokens a deck's cards are listed as able to create<br>change how token related parts are read from stored card data for the Arena export | `mtgdb/ui/arena_export.py`; `mtgdb/core/scryfall_json.py`; `mtgdb/deck/arena_support.py` | Finding only: the notice's wording and list belong to the Arena export UI, and parsing a stored JSON column belongs to the shared Scryfall parser. |
+| `mtgdb/deck/arena_tokens.py` | change which tokens a deck's cards are listed as able to create<br>change how token related parts are read from stored card data for the Arena export<br>change which deck entries are left out of the export as tokens | `mtgdb/ui/arena_export.py`; `mtgdb/core/scryfall_json.py`; `mtgdb/deck/arena_support.py` | Finding only: the notice's wording and list belong to the Arena export UI, and parsing a stored JSON column belongs to the shared Scryfall parser. |
 | `mtgdb/deck/arena_printings.py` | change which printing a Proxic Arena export uses when Arena lacks the deck's own<br>change how a card's set code and collector number are checked against the printings Forge has | `mtgdb/ui/arena_export.py`; `mtgdb/deck/arena_support.py`; `mtgdb/database/queries.py` | Choosing only, and only for the export: the asset belongs to arena support, the card database is read through an injected lookup, the swap list's wording belongs to the Arena export UI, and the saved deck is never changed. |
 | `mtgdb/arena/export.py` | change the art filename Proxic Arena looks up or which printing supplies one name's image<br>change what the exported bundle holds or how its archive is written | `mtgdb/ui/arena_export.py`; `mtgdb/printing/service.py`; `mtgdb/deck/model.py` | The card-art download, its cache and its HTTP policy stay in printing and are injected here; this owns naming and packaging only. |
 | `mtgdb/arena/connection.py` | change how this computer links to Proxic Arena or stores its device token<br>change when the deck rules are downloaded or which saved copy an export falls back to | `mtgdb/ui/arena_connection.py`; `mtgdb/ui/arena_export.py`; `mtgdb/core/secret_store.py` | Transport and storage only: it reads no rule (the caller passes the check), draws nothing, and never follows a redirect with the token. |
@@ -1341,20 +1341,35 @@ every feature together and is exempt.
   repeated legendary permanent MUST NOT mention the legend rule.
   _Verification:_ **AUTO**.
 - **ARN-010 — MUST:** Tell the player which tokens the exported deck's cards can
-  create, so they can add card art for them, because the bundle carries art for
-  the deck's own cards only. The tokens come from each card's `related_parts`
+  create, as information: Proxic Arena makes tokens itself during the game and
+  keys package art to deck entries only, so there is nothing for the player to
+  add, and the notice MUST NOT ask them to add token art (it once did, and
+  read as a problem to fix). The tokens come from each card's `related_parts`
   entries whose component is `token`, parsed through `core/scryfall_json.py`,
   never a second parser; only the main deck is read (ARN-008); tokens of one
   name and type line are one entry that names the deck cards able to make it.
   `deck/arena_tokens.py` finds them; `ui/arena_export.py` words the notice apart
   from its widgets and shows it as a labelled list in the single report dialog
-  (ARN-006), never as a refusal, saying in plain words that tokens are not
-  included in the export and that the player can add their art. It MUST name
+  (ARN-006), never as a refusal, saying in plain words that Arena makes the
+  tokens and nothing needs adding. A token card the deck holds is not a maker
+  (ARN-013). It MUST name
   each token with its type line and its makers, capping both lists with the
   remainder counted rather than dropped. A deck whose cards make no token MUST
   NOT mention tokens. Adding token art to the bundle is not done here: the
   package holds the deck's cards only (Arena's package format).
   _Verification:_ **AUTO**.
+- **ARN-013 — MUST:** Leave a token, emblem or art card out of **Proxic Arena
+  Export** when the deck holds one, because a token is not a card a deck holds:
+  Arena makes tokens during the game, and its import refuses a decklist that
+  names one, which a player hit with an Ape token (2026-10-27). Which entries
+  those are is the card database's own `content_kind`, never a second reading
+  of the type line; `deck/arena_tokens.py`'s `without_game_pieces` removes them
+  from the snapshot before anything else reads it, so they are in no decklist,
+  no art, no playability notice and no card count. The report and the refusal
+  MUST say in plain words which were left out, that Arena makes tokens itself,
+  and that they do not count toward the deck's size, so a deck that falls short
+  once they are gone says why. The saved deck keeps them; `Save Deck As` and
+  JSON export are unchanged. _Verification:_ **AUTO**.
 - **ARN-011 — MUST:** Export a printing Proxic Arena accepts for every main-deck
   card, because Arena checks the printing as well as the name and one mismatch
   refuses the whole import; Arena stays strict, so the export adapts (owner

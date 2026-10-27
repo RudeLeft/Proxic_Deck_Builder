@@ -425,7 +425,7 @@ def _limit_refusal_check():
         first.count("_detached_deck_copy(") == 1
         and "obtain_rules(" in worker and "rules_from_document(" in worker
         and 'submit_deck_file_job(read_rules, name="mtg-arena-rules")' in first
-        and "self._continue_arena_export(deck, detached, rules, obtained)" in first
+        and "self._continue_arena_export(deck, detached, rules, obtained, game_pieces)" in first
         and "filedialog" not in first
         # Measured by Arena's format, refused, and only then asked where to save.
         and 0 <= measured < refused < prompted
@@ -534,9 +534,10 @@ def _arena_token_notice_check():
         # No token, no mention of tokens at all.
         arena_token_section(()) == ()
         # Plain words: not in the export, and the player can add the art.
-        and "can create tokens" in intro
-        and "not included in the export" in intro
-        and "add card art for them yourself" in intro
+        and "make tokens during a game" in intro
+        and "Proxic Arena makes the tokens itself" in intro
+        # Arena never uses token art from a package: nothing to ask for.
+        and "art" not in intro
         and lines == [
             "Goblin (Token Creature — Goblin), from Hordeling Outburst"]
         and rest == 0
@@ -918,6 +919,62 @@ def _printing_ui_check():
         and "arena_printings" not in deck_files)
 
 
+def _token_cards_left_out_check():
+    """ARN-013: a token card in the deck is left out, not counted, and said so (the Ape report)."""
+    from mtgdb.deck.arena_limits import arena_deck_limits
+    from mtgdb.deck.arena_support import ArenaFormat
+    from mtgdb.deck.arena_tokens import deck_tokens, is_game_piece, without_game_pieces
+    from mtgdb.ui.arena_export import arena_game_piece_note
+
+    pongify = _card("pongify", "Pongify")
+    pongify["content_kind"] = "card"
+    pongify["related_parts"] = json.dumps([
+        {"component": "token", "name": "Ape", "type_line": "Token Creature — Ape"}])
+    ape = _card("ape", "Ape", set_code="totc")
+    ape["content_kind"] = "token"
+    ape["related_parts"] = json.dumps([
+        {"component": "token", "name": "Ape", "type_line": "Token Creature — Ape"}])
+    island = _card("island", "Island", set_code="m21")
+    deck = Deck("Apes", "modern")
+    deck.add(pongify, "main", 4)
+    deck.add(island, "main", 55)
+    deck.add(ape, "main", 1)
+    deck.add(ape, "side", 2)
+    before = deck.snapshot_entries()
+    kept, left_out = without_game_pieces(deck)
+    text = deck_to_text(kept, include_side=False)
+    rules_format = ArenaFormat(min_cards=60, max_cards=65, max_copies=4,
+                               unlimited=frozenset({"island"}))
+    short = arena_deck_limits(kept, rules_format)
+    clean = Deck("Clean", "modern")
+    clean.add(pongify, "main", 4)
+    clean.add(island, "main", 56)
+    same, none_left = without_game_pieces(clean)
+    note = arena_game_piece_note(left_out)
+    source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
+    first, second = _export_flow(source)
+    return (
+        is_game_piece(ape) and not is_game_piece(pongify)
+        # Left out of the decklist and both boards, and named once.
+        and left_out == ("Ape",)
+        and "Ape [" not in text and "4 Pongify" in text
+        and kept.total("main") == 59 and kept.total("side") == 0
+        # It does not count: 59 real cards are one short, as Arena would say.
+        and short.cards_short == 1
+        # The tokens the deck makes come from Pongify alone, never the token itself.
+        and [token.makers for token in deck_tokens(deck)] == [("Pongify",)]
+        # A deck without one is untouched.
+        and same is clean and none_left == ()
+        # The saved deck keeps it.
+        and deck.snapshot_entries() == before
+        and "Arena makes them during the game" in note and note.endswith("Ape.")
+        and "don't count toward the deck's size" in note
+        and arena_game_piece_note(()) == ""
+        # Removed from the snapshot before the rules or the limits read it.
+        and "without_game_pieces(self._detached_deck_copy(deck))" in first
+        and "arena_game_piece_note(game_pieces)" in second)
+
+
 def main():
     checks = {
         "art filenames resolve through Arena's own index rule":
@@ -956,6 +1013,8 @@ def main():
             _unchanged_export_check(),
         "each changed printing is listed in plain words":
             _printing_sentences_check(),
+        "a token card in the deck is left out, not counted, and said so":
+            _token_cards_left_out_check(),
         "printings are chosen on the export worker from the measured snapshot":
             _printing_ui_check(),
     }
