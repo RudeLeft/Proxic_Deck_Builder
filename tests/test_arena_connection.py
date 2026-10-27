@@ -1,4 +1,4 @@
-"""Proxic Arena connection contract: linking, the sealed token, and the rules an export uses (ARN-012)."""
+"""Proxic Arena connection contract: linking, the sealed token, the rules, and sending a deck (ARN-012, ARN-014)."""
 
 import atexit
 import gzip
@@ -15,15 +15,17 @@ sys.path.insert(0, str(ROOT))
 
 from mtgdb.arena import connection
 from mtgdb.arena.connection import (
-    SOURCE_ARENA, SOURCE_BUILT_IN, SOURCE_SAVED, ArenaConnectionError,
-    ArenaConnectionStore, ArenaLink, RulesFetch, fetch_rules, link_computer,
-    normalize_address, obtain_rules,
+    DUPLICATE, NAME_TAKEN, REFUSED, SENT, SOURCE_ARENA, SOURCE_BUILT_IN,
+    SOURCE_SAVED, UNAUTHORIZED, UNAVAILABLE, ArenaConnectionError,
+    ArenaConnectionStore, ArenaLink, DeckNamesFetch, RulesFetch,
+    fetch_deck_names, fetch_known_pictures, fetch_rules, link_computer,
+    normalize_address, obtain_rules, send_deck,
 )
 from mtgdb.core import secret_store
 from mtgdb.deck.arena_support import rules_from_document
 
 RULES = {
-    "rulesVersion": "v1", "forgeRelease": "forge-2.0.15",
+    "rulesVersion": "v1",
     "format": {"minCards": 60, "maxCards": 65, "maxCopies": 4,
                "unlimitedCopies": ["plains"], "sideDecks": {}},
     "cards": [{"name": "Lightning Bolt", "faces": ["Lightning Bolt"], "printings": ["M10 146"]}],
@@ -73,8 +75,9 @@ class _Opener:
         return answer
 
 
-def _http_error(code, detail=""):
-    body = json.dumps({"detail": detail}).encode() if detail else b""
+def _http_error(code, detail="", **fields):
+    payload = dict(fields, detail=detail) if detail or fields else None
+    body = json.dumps(payload).encode() if payload else b""
     return urllib.error.HTTPError("https://arena", code, "x", {}, io.BytesIO(body))
 
 
@@ -229,41 +232,130 @@ def _secret_check():
 
 
 def _sentences_check():
-    """ARN-012: the dialog and the report say where the rules came from, in plain words."""
+    """ARN-012: the window says who it is linked as and where the rules came from."""
     from mtgdb.arena.connection import ObtainedRules
-    from mtgdb.ui.arena_connection import arena_linked_text
+    from mtgdb.ui.arena_connection import arena_link_line
     from mtgdb.ui.arena_export import arena_rules_note
 
-    linked = arena_linked_text(ArenaLink("https://p.example", "pat", "Pat", "Desk", 1.0), 1_700_000_000)
-    named = arena_linked_text(ArenaLink("https://p.example", "pat", "Patricia", "Desk", 1.0))
+    line = arena_link_line(ArenaLink("https://proxic.example", "pat", "Pat", "Desk", 1.0))
     return (
-        "Linked to https://p.example as Pat." in linked
-        and "Patricia (pat)" in named
-        and "remove this computer from Arena's Account page" in linked
-        and "last downloaded" in linked and "last downloaded" not in named
-        # Arena's own answer is the ordinary case: nothing to say.
-        and arena_rules_note(ObtainedRules({}, SOURCE_ARENA)) == ""
-        and "not linked to Proxic Arena" in arena_rules_note(ObtainedRules({}, SOURCE_BUILT_IN))
-        and "File > Proxic Arena Connection" in arena_rules_note(ObtainedRules({}, SOURCE_BUILT_IN))
-        and "could not be reached" in arena_rules_note(ObtainedRules({}, SOURCE_SAVED, 1_700_000_000))
+        line == 'Linked to Proxic Arena as Pat on "Desk" · proxic.example'
+        and arena_rules_note(ObtainedRules({}, SOURCE_ARENA), 1_700_000_000).startswith(
+            "Deck rules from Proxic Arena, checked ")
+        and "built into this version" in arena_rules_note(ObtainedRules({}, SOURCE_BUILT_IN))
+        and "couldn't be reached" in arena_rules_note(ObtainedRules({}, SOURCE_SAVED, 1_700_000_000))
         and "no longer accepts this computer" in arena_rules_note(
-            ObtainedRules({}, SOURCE_SAVED, unlinked=True)))
+            ObtainedRules({}, SOURCE_SAVED, unlinked=True))
+        # The old dialog's menu is gone, so nothing points at it.
+        and "File >" not in arena_rules_note(ObtainedRules({}, SOURCE_BUILT_IN)))
 
 
-def _dialog_contract_check():
-    """ARN-012: the dialog links on a worker, never asks for a password, and is on the File menu."""
-    dialog = (ROOT / "mtgdb/ui/arena_connection.py").read_text(encoding="utf-8")
+def _form_contract_check():
+    """ARN-012, ARN-006: linking is in the export window, on a worker, never with a password."""
+    form = (ROOT / "mtgdb/ui/arena_connection.py").read_text(encoding="utf-8")
     app = (ROOT / "mtgdb/ui/app.py").read_text(encoding="utf-8")
     store = (ROOT / "mtgdb/arena/connection.py").read_text(encoding="utf-8")
     return (
-        "submit_deck_file_job(" in dialog
-        and "password" not in dialog.lower()
-        and "messagebox" not in dialog
-        and 'label="Proxic Arena Connection..."' in app
-        and "ArenaConnectionMixin" in app
+        "class ArenaLinkForm" in form
+        and "submit_deck_file_job(" in form
+        and "password" not in form.lower()
+        and "messagebox" not in form
+        # No Proxic Arena item in the File menu, and no separate dialog.
+        and "Proxic Arena Connection" not in app
+        and "ArenaConnectionMixin" not in app
+        and "_open_arena_connection" not in form
         # The token goes only through the sealed store.
         and "write_secret(" in store and "read_secret(" in store
         and "build_opener(_NoRedirect())" in store)
+
+
+def _deck_names_check():
+    """ARN-014: the Deck Depot's names, read with the token; a refusal is "unauthorized"."""
+    opener = _Opener(_Response(200, json.dumps({"names": ["Ape Tribal", "Burn"]}).encode()))
+    got = fetch_deck_names("https://p.example", "tok", opener=opener)
+    sent = opener.requests[0]
+
+    def status(answer):
+        return fetch_deck_names("https://p.example", "tok", opener=_Opener(answer)).status
+
+    return (
+        got == DeckNamesFetch("ok", ("Ape Tribal", "Burn"))
+        and sent.full_url == "https://p.example/api/deck-builder/deck-names"
+        and sent.get_header("Authorization") == "Bearer tok"
+        and status(_http_error(401)) == "unauthorized"
+        and status(_http_error(503)) == "unavailable"
+        and status(OSError("x")) == "unavailable"
+        and status(_Response(200, b"{}")) == "unavailable")
+
+
+def _known_pictures_check():
+    """ARN-014: which pictures Arena holds; any failure means "none", so all are sent."""
+    a, b, c = "a" * 64, "b" * 64, "c" * 64
+    opener = _Opener(_Response(200, json.dumps({"known": [b, "f" * 64]}).encode()))
+    got = fetch_known_pictures("https://p.example", "tok", [c, b, a, b], opener=opener)
+    sent = opener.requests[0]
+    many = _Opener(_Response(200, b'{"known": []}'))
+    fetch_known_pictures("https://p.example", "tok", [f"{n:064x}" for n in range(500)], opener=many)
+
+    def known(answer):
+        return fetch_known_pictures("https://p.example", "tok", [a], opener=_Opener(answer))
+
+    return (
+        # Only what was asked about counts, whatever Arena says.
+        got == frozenset({b})
+        and sent.full_url == "https://p.example/api/deck-builder/pictures/known"
+        and sent.get_method() == "POST"
+        and json.loads(sent.data.decode()) == {"sha256": [a, b, c]}
+        and len(json.loads(many.requests[0].data.decode())["sha256"]) == 200
+        and known(OSError("x")) == frozenset()
+        and known(_http_error(401)) == frozenset()
+        # Nothing to ask: no request at all.
+        and fetch_known_pictures("https://p.example", "tok", [], opener=_Opener()) == frozenset())
+
+
+def _send_check():
+    """ARN-014: one multipart send with the typed name; every answer read in plain terms."""
+    created = _Opener(_Response(201, json.dumps({
+        "deckId": "d1", "displayName": "Ape Tribal 2", "totalCards": 60,
+        "tokenPictures": 1}).encode()))
+    sent = send_deck("https://p.example", "tok", b"PK-zip-bytes", "Ape Tribal.zip",
+                     name="Ape Tribal 2", opener=created)
+    request = created.requests[0]
+    body = request.data
+    unnamed = _Opener(_Response(201, b"{}"))
+    send_deck("https://p.example", "tok", b"z", "d.zip", opener=unnamed)
+
+    def answer(error):
+        return send_deck("https://p.example", "tok", b"zip", "d.zip", opener=_Opener(error))
+
+    duplicate = answer(_http_error(
+        409, 'You already have this deck: "Burn".', errorCode="DUPLICATE_PACKAGE",
+        problems=["id"]))
+    taken = answer(_http_error(
+        409, 'You already have a deck called "Burn". Choose another name.',
+        errorCode="DECK_NAME_TAKEN", problems=["Burn"]))
+    refused = answer(_http_error(
+        422, "The deck is not legal in Open Format.", errorCode="DECK_NOT_LEGAL",
+        problems=["58 cards", "5 Bolt"]))
+    crlf = bytes([13, 10])
+    return (
+        sent.status == SENT and sent.deck_name == "Ape Tribal 2"
+        and (sent.deck_id, sent.total_cards, sent.token_pictures) == ("d1", 60, 1)
+        and request.full_url == "https://p.example/api/deck-builder/decks"
+        and request.get_header("Authorization") == "Bearer tok"
+        and request.get_header("Content-type").startswith("multipart/form-data; boundary=")
+        and b'name="name"' + crlf + crlf + b"Ape Tribal 2" + crlf in body
+        and b'name="package"; filename="Ape Tribal.zip"' in body
+        and b"PK-zip-bytes" in body
+        # No name typed: no name field at all.
+        and b'name="name"' not in unnamed.requests[0].data
+        and duplicate.status == DUPLICATE and duplicate.deck_name == "Burn"
+        and taken.status == NAME_TAKEN and taken.deck_name == "Burn"
+        and refused.status == REFUSED and refused.problems == ("58 cards", "5 Bolt")
+        and "not legal" in refused.detail
+        and answer(_http_error(401)).status == UNAUTHORIZED
+        and answer(_http_error(503)).status == UNAVAILABLE
+        and answer(urllib.error.URLError("down")).status == UNAVAILABLE)
 
 
 def main():
@@ -274,8 +366,11 @@ def main():
         "a redirect is never followed with the token": _no_redirect_check(),
         "an export uses Arena's rules, else the saved copy, else the built-in one": _obtain_check(),
         "the token is sealed, and a damaged one reads as not linked": _secret_check(),
-        "the dialog and the report say where the rules came from": _sentences_check(),
-        "the dialog links on a worker and never asks for a password": _dialog_contract_check(),
+        "the window says who it is linked as and where the rules came from": _sentences_check(),
+        "linking is in the export window, on a worker, never with a password": _form_contract_check(),
+        "the Deck Depot's names are read with the token": _deck_names_check(),
+        "Arena is asked which pictures it holds, and a failure sends them all": _known_pictures_check(),
+        "a deck is sent in one request, and every answer is read": _send_check(),
     }
     ok = True
     for label, passed in checks.items():

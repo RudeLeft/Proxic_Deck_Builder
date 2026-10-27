@@ -34,7 +34,9 @@ from mtgdb.deck.arena_support import (
     rules_from_document, unsupported_deck_names,
 )
 from mtgdb.deck.arena_limits import arena_deck_limits
-from mtgdb.deck.arena_tokens import deck_tokens
+from mtgdb.deck.arena_tokens import (
+    counted_cards, deck_tokens, split_for_arena, token_card_count, token_status,
+)
 
 
 def _card(card_id, name, *, oracle_id=None, type_line="Creature",
@@ -502,9 +504,8 @@ def _arena_shipped_rules_check():
     rules_format = rules.format
     return (
         rules.known
-        # As Arena served it: its own version and the release it came from.
+        # As Arena served it, with its own version.
         and payload["rulesVersion"] == rules.rules_version != ""
-        and rules.forge_release.startswith("forge-")
         and len(support.names) > 30000
         and "lightning_bolt" in support.names
         # A back face's name is a playable name too.
@@ -512,7 +513,13 @@ def _arena_shipped_rules_check():
         # A card's own printings, never another card's that shares a face name.
         and "M10 146" in support.printings["lightning_bolt"]
         and "M21 263" in support.printings["island"]
-        # Forge's lookup: a second code finds its edition, a Scryfall code alone does not.
+        # In Arena's order, kept as served (ARN-011): the first is Arena's own
+        # first choice, as the document lists it.
+        and isinstance(support.printings["lightning_bolt"], tuple)
+        and support.printings["lightning_bolt"][0] == next(
+            card for card in payload["cards"]
+            if card["name"] == "Lightning Bolt")["printings"][0]
+        # Arena's set codes: a second code finds its edition, a Scryfall code alone does not.
         and support.set_codes.get("CON") == "CFX"
         and "UGIN" not in support.set_codes
         and support.editions["UGF"][0] == "ugin"
@@ -524,16 +531,87 @@ def _arena_shipped_rules_check():
         and "CONTRAPTIONS" in set(rules_format.sections.values()))
 
 
-def _no_forge_tooling_check():
-    """DECK-012, VER-015: nothing here rebuilds a card list from Forge or watches it."""
-    deck_sources = "".join(
+def _no_engine_knowledge_check():
+    """ARN-015, DECK-012: the program knows nothing of the engine Arena runs.
+
+    Every instruction comes from Arena, so no source under mtgdb/ names the
+    engine or reads its files, and nothing here rebuilds a card list or
+    watches the engine.
+    """
+    import re
+    engine = re.compile(r"\b" + "for" + r"ge\b", re.IGNORECASE)
+    named = sorted(
+        str(path.relative_to(ROOT)) for path in (ROOT / "mtgdb").rglob("*.py")
+        if engine.search(path.read_text(encoding="utf-8")))
+    sources = "".join(
         path.read_text(encoding="utf-8") for path in (ROOT / "mtgdb").rglob("*.py"))
+    workflows = "".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / ".github/workflows").glob("*.yml"))
     return (
-        not (ROOT / "tests/arena_support_refresh.py").exists()
-        and not (ROOT / ".github/workflows/forge-update-check.yml").exists()
+        named == []
+        and not (ROOT / "tests/arena_support_refresh.py").exists()
         and not (ROOT / "assets/arena/supported_cards.json").exists()
-        and "cardsfolder" not in deck_sources
-        and "res/editions" not in deck_sources)
+        and not engine.search(workflows)
+        and "cardsfolder" not in sources
+        and "res/editions" not in sources
+        and "tokenscripts" not in sources)
+
+
+def _arena_token_parts_check():
+    """ARN-013, ARN-010, ARN-016: token cards travel as pictures, counted apart.
+
+    Expectations are written out rather than derived from the functions under
+    test (VER-010).
+    """
+    def kind(card, content_kind):
+        card["content_kind"] = content_kind
+        return card
+
+    pongify = _card("po", "Pongify")
+    pongify["related_parts"] = json.dumps([
+        {"component": "token", "name": "Ape", "type_line": "Token Creature — Ape"}])
+    krenko = _card("kr", "Krenko, Mob Boss")
+    krenko["related_parts"] = json.dumps([
+        {"component": "token", "name": "Goblin", "type_line": "Token Creature — Goblin"}])
+    ape = kind(_card("ape1", "Ape"), "token")
+    ape_again = kind(_card("ape2", "Ape", set_code="alt"), "token")
+    emblem = kind(_card("em", "Elspeth Emblem"), "emblem")
+    side_token = kind(_card("sd", "Zombie"), "token")
+    deck = Deck("Ape Tribal", "modern")
+    deck.add(pongify, "main", 4)
+    deck.add(krenko, "main", 4)
+    deck.add(_card("fo", "Forest"), "main", 52)
+    deck.add(ape, "main", 1)
+    deck.add(ape_again, "main", 2)
+    deck.add(emblem, "main", 1)
+    deck.add(side_token, "side", 1)
+    deck.add(_card("bo", "Lightning Bolt"), "side", 3)
+    parts = split_for_arena(deck)
+    held, missing = token_status(deck)
+    text = deck_to_text(parts.cards, include_side=False, tokens=parts.tokens)
+    lines = text.splitlines()
+    return (
+        # Cards only, both boards; no game piece anywhere in them.
+        parts.cards.total("main") == 60
+        and parts.cards.total("side") == 3
+        # One token per name: the first printing, with every copy counted.
+        and [(card["id"], quantity) for card, quantity in parts.tokens] == [("ape1", 3)]
+        and parts.left_out == ("Elspeth Emblem",)
+        # Matched by name alone: any Ape token card dresses the Ape.
+        and [token.name for token in held] == ["Ape"]
+        and [token.name for token in missing] == ["Goblin"]
+        and missing[0].makers == ("Krenko, Mob Boss",)
+        # The headings' counts leave game pieces out.
+        and counted_cards(deck, "main") == 60
+        and counted_cards(deck, "side") == 3
+        and token_card_count(deck) == 3
+        # The Tokens section follows the deck, after a blank line.
+        and lines[-2:] == ["// Tokens", "3 Ape [TST:1]"]
+        and lines[-3] == ""
+        and "Sideboard" not in text
+        # A deck with no token cards writes no section.
+        and "// Tokens" not in deck_to_text(parts.cards, include_side=False))
 
 
 def _arena_tokens_check():
@@ -842,7 +920,7 @@ def main():
             "mtgdb/deck/model.py", "mtgdb/deck/io.py", "mtgdb/deck/analysis.py",
             "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py",
             "mtgdb/deck/arena_limits.py", "mtgdb/deck/arena_tokens.py",
-            "mtgdb/deck/arena_printings.py",
+            "mtgdb/deck/arena_printings.py", "mtgdb/deck/arena_check.py",
             "mtgdb/ui/app.py", "mtgdb/ui/deck.py",
             "mtgdb/ui/deck_files.py", "mtgdb/ui/deck_stats.py")
     }
@@ -997,7 +1075,7 @@ def main():
                 "mtgdb/deck/model.py", "mtgdb/deck/io.py", "mtgdb/deck/analysis.py",
                 "mtgdb/deck/legality.py", "mtgdb/deck/arena_support.py",
                 "mtgdb/deck/arena_limits.py", "mtgdb/deck/arena_tokens.py",
-                "mtgdb/deck/arena_printings.py")),
+                "mtgdb/deck/arena_printings.py", "mtgdb/deck/arena_check.py")),
         "model owns no parser, probability, randomness, or legality imports": (
             not ({"re", "json", "math", "random"} & imports["mtgdb/deck/model.py"])),
         "Arena lookup keys mirror the Proxic Arena name rule":
@@ -1010,8 +1088,10 @@ def main():
             _arena_limits_check(),
         "the built-in Arena rules are Arena's own document, read in full":
             _arena_shipped_rules_check(),
-        "no Forge card list is built or watched here":
-            _no_forge_tooling_check(),
+        "the program knows nothing of the engine Arena runs":
+            _no_engine_knowledge_check(),
+        "token cards travel as pictures, counted apart from the cards":
+            _arena_token_parts_check(),
         "the tokens a deck's cards can create are found once each, main deck only":
             _arena_tokens_check(),
         "the Arena rules location belongs to the shared asset owner": (

@@ -29,10 +29,9 @@ from mtgdb.search.controller import SearchController
 from mtgdb.search.repository import SearchRepository
 from mtgdb.ui.card_detail import CardDetailMixin
 from mtgdb.ui.comparison_controls import ComparisonFeatureMixin
-from mtgdb.ui.components import AppMenubutton, ToolTip
+from mtgdb.ui.components import AppButton, AppMenubutton, ToolTip
 from mtgdb.ui.database_sync import DatabaseSyncMixin
 from mtgdb.ui.deck import DeckEditorMixin
-from mtgdb.ui.arena_connection import ArenaConnectionMixin
 from mtgdb.ui.arena_export import ArenaExportMixin
 from mtgdb.ui.deck_files import DeckFileWorkflowMixin
 from mtgdb.ui.deck_stats import DeckStatsMixin
@@ -57,7 +56,6 @@ log = logging.getLogger("mtg")
 class DeckBuilderApp(
         WorkspaceMixin, DatabaseSyncMixin, PrintingMixin,
         DeckEditorMixin, DeckFileWorkflowMixin, ArenaExportMixin,
-        ArenaConnectionMixin,
         DeckStatsMixin, ComparisonFeatureMixin,
         ManaSymbolsMixin, SetFilterSupportMixin,
         SearchFeatureMixin, TableFilterMixin, SearchResultsMixin,
@@ -235,10 +233,6 @@ class DeckBuilderApp(
         filemenu.add_command(label="Open Deck...", command=self._open_deck)
         filemenu.add_command(label="Paste Decklist...", command=self._paste_deck)
         filemenu.add_command(label="Save Deck As...", command=self._save_deck)
-        filemenu.add_command(
-            label="Proxic Arena Export...", command=self._export_arena)
-        filemenu.add_command(
-            label="Proxic Arena Connection...", command=self._open_arena_connection)
         filemenu.add_command(label="Export JSON...", command=self._export_all_decks_json)
         filemenu.add_separator()
         filemenu.add_command(label="Close Deck", command=self._close_active_deck)
@@ -256,6 +250,14 @@ class DeckBuilderApp(
         printmenu.add_command(label="Create Print Template...", command=self._create_print_template)
         print_btn.configure(menu=printmenu)
         print_btn.pack(side="left", padx=(2, 0))
+
+        # One button, not a menu: everything sending a deck to Proxic Arena
+        # takes -- linking, the check, the name, the tokens -- is in the one
+        # window it opens (ARN-006, owner decision 2026-10-27).
+        AppButton(
+            bar, text="Proxic Arena Export", role="menu_action",
+            command=self._export_arena,
+        ).pack(side="left", padx=(8, 0))
 
 
     def _bind_debounced_wrap(self, label, min_width=140, padding=8,

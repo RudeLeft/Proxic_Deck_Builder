@@ -1,24 +1,23 @@
 """Which printing of each card a Proxic Arena export uses.
 
 Proxic Arena checks the printing as well as the name. A decklist line
-``N Name [SET:NUM]`` is accepted only when Forge holds that exact printing --
-the set code found by Forge's own edition lookup, the collector number equal
--- and one line that is not refuses the whole import. Arena stays strict on
-purpose, so the export picks a printing Forge has instead.
+``N Name [SET:NUM]`` is accepted only when Arena holds that exact printing --
+the set code one its rules list, the collector number equal -- and one line
+that is not refuses the whole import. Arena stays strict on purpose, so the
+export picks a printing Arena has instead.
 
-A card whose printing Forge has is exported exactly as the deck holds it.
+A card whose printing Arena has is exported exactly as the deck holds it.
 Otherwise the export uses, in order of preference:
 
-1. the same set, with Forge's collector number, when Forge has that set;
-2. otherwise the newest ordinary printing -- core, expansion, funny, draft and
-   reprint editions ahead of commander and collector editions, ahead of
-   everything else, and a Universes Beyond printing after the in-universe
-   ones, as deck import ranks them -- among the printings Scryfall also has,
-   so its picture can be fetched and bundled;
+1. the same set, with Arena's collector number, when Arena has that set;
+2. otherwise the first printing in the order Arena's rules list them -- Arena
+   decides which printing it prefers, never this module (ARN-011, ARN-015) --
+   among the printings Scryfall also has, so its picture can be fetched and
+   bundled;
 3. otherwise the line names the card alone, which Arena resolves by name.
 
 Only the export changes. The deck the player saved keeps its printings, and
-``Save Deck As`` never comes here. This module does no I/O: the asset arrives
+``Save Deck As`` never comes here. This module does no I/O: the rules arrive
 as an ``ArenaSupport`` and the Scryfall printings of a name through an
 injected ``printings_of`` callable, which the export runs off Tk.
 """
@@ -33,12 +32,6 @@ from mtgdb.deck.arena_support import (
 )
 from mtgdb.deck.model import Deck
 
-# Forge edition types, by preference. An ordinary printing is the card as it
-# came in a normal release.
-_ORDINARY_EDITION_TYPES = ("core", "expansion", "funny", "draft", "reprint")
-_SUPPLEMENTAL_EDITION_TYPES = (
-    "commander", "collector_edition", "duel_deck", "starter", "boxed_set",
-    "multiplayer")
 # Scryfall treatments that make a printing an alternate look of the card.
 _TREATMENT_FRAMES = ("showcase", "extendedart", "inverted", "etched")
 
@@ -48,7 +41,7 @@ class ArenaPrintingSwap:
     """One deck printing the export replaced, for the report.
 
     ``to_set`` and ``to_number`` are empty when the export names the card
-    alone because no printing Forge has could be pictured.
+    alone because no printing Arena has could be pictured.
     """
 
     name: str
@@ -74,7 +67,7 @@ def printing_accepted(support, card):
     """Whether Proxic Arena accepts ``card`` as the deck holds it.
 
     A card with no set code is written by name and is always accepted. A name
-    the asset has no printings for is not this module's question -- the name
+    the rules have no printings for is not this module's question -- the name
     check reports it -- so it is left as it is.
     """
     printings = support.printings.get(_key(card))
@@ -116,23 +109,14 @@ def _row_rank(row):
     )
 
 
-def _numeric(number):
-    digits = "".join(character for character in number if character.isdigit())
-    return int(digits) if digits else 0
-
-
-def _date_value(date):
-    digits = "".join(character for character in str(date) if character.isdigit())
-    return int(digits) if digits else 0
-
-
 def choose_printing(support, card, rows):
     """Return ``(row, set code, number)`` for the printing to export, or None.
 
     ``rows`` are the Scryfall printings of the card's name. Only a printing
-    Forge has and Scryfall can picture is a candidate. The set code returned
-    is one Forge's lookup accepts for that printing's edition: the Scryfall
-    code when Forge accepts it, otherwise Forge's own.
+    Arena has and Scryfall can picture is a candidate: the deck's own set
+    first, then Arena's order. The set code returned is one Arena accepts for
+    that printing's edition: the Scryfall code when Arena accepts it,
+    otherwise Arena's own.
     """
     printings = support.printings.get(_key(card))
     if not printings:
@@ -154,28 +138,14 @@ def choose_printing(support, card, rows):
     same_set.discard(None)
 
     candidates = []
-    for printing in printings:
+    for order, printing in enumerate(printings):
         edition, _separator, number = printing.partition(PRINTING_SEPARATOR)
-        details = support.editions.get(edition, ("", "", ""))
-        scryfall_code, edition_type, date = details
+        scryfall_code = support.editions.get(edition, (edition.casefold(),))[0]
         row = (pictured.get((scryfall_code, number))
                or pictured.get((edition.casefold(), number)))
         if row is None:
             continue
-        kind = edition_type.casefold()
-        tier = (0 if kind in _ORDINARY_EDITION_TYPES
-                else 1 if kind in _SUPPLEMENTAL_EDITION_TYPES else 2)
-        rank = (
-            edition not in same_set,
-            bool(row.get("universes_beyond")),
-            tier,
-            -_date_value(date),
-            _row_rank(row),
-            _numeric(number),
-            number,
-            edition,
-        )
-        candidates.append((rank, row, edition, number))
+        candidates.append(((edition not in same_set, order), row, edition, number))
     if not candidates:
         return None
     _rank, row, edition, number = min(candidates, key=lambda item: item[0])
@@ -189,7 +159,7 @@ def arena_export_deck(deck, support, printings_of):
     """Return ``(deck to export, swaps)`` with every main-deck printing accepted.
 
     ``deck`` is not changed. When every printing is already accepted, or the
-    asset knows no printings, it is returned as it is, so such a deck exports
+    rules list no printings, it is returned as it is, so such a deck exports
     exactly as before. ``printings_of(name)`` returns the Scryfall printings
     of a stored card name and is asked at most once per name.
     """
@@ -212,7 +182,7 @@ def arena_export_deck(deck, support, printings_of):
             rows_by_name[name] = list(printings_of(name) or ())
         chosen = choose_printing(support, card, rows_by_name[name])
         if chosen is None:
-            # Nothing Forge has can be pictured: name the card alone, which
+            # Nothing Arena has can be pictured: name the card alone, which
             # Arena resolves by name, and keep the deck's own picture.
             replacement = dict(card)
             replacement["set_code"] = ""

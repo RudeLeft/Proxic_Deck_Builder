@@ -1,10 +1,11 @@
 """Proxic Arena's deck rules as this application reads them, and the names a deck carries that Arena cannot play.
 
-Proxic Arena publishes its deck rules (its spec 0021): every card its Forge
-can play, every printing of each that Forge accepts, the set codes Forge's own
-lookup answers to, and Open Format's limits. The Deck Builder follows that
-document instead of knowing anything about Forge, so a Forge update on Arena's
-side reaches every export with no release here (DECK-012).
+Proxic Arena publishes its deck rules (its specs 0021 and 0022): every card
+it can play, every printing of each it accepts -- in the order Arena prefers
+them -- the set codes it answers to, and Open Format's limits. The Deck Builder
+follows that document and knows nothing of how Arena plays a card, so when
+Arena's game engine changes, every export follows with no release here
+(DECK-012, ARN-015).
 
 The document arrives three ways, all in the one shape this module reads: fresh
 from a linked Arena, as the copy saved from the last download, or as the copy
@@ -29,7 +30,7 @@ import unicodedata
 
 FACE_SEPARATOR = " // "
 
-# One printing in the document: Forge's edition code and collector number,
+# One printing in the document: Arena's edition code and collector number,
 # joined by a space, which neither ever contains.
 PRINTING_SEPARATOR = " "
 
@@ -46,10 +47,11 @@ class ArenaSupport:
     """Which cards and printings Arena can play.
 
     ``names`` holds lookup keys, of every card and every face. ``printings``
-    maps a card's key to the printings Forge has of it, each ``"<EDITION>
-    <NUMBER>"``. ``set_codes`` maps every set code Forge's lookup accepts,
-    upper-cased, to the edition it finds, and ``editions`` gives each
-    edition's ``(Scryfall set code, Forge type, release date)``. Empty means
+    maps a card's key to the printings Arena has of it, each ``"<EDITION>
+    <NUMBER>"``, in the order Arena prefers them (a tuple: the order is
+    Arena's instruction, ARN-011). ``set_codes`` maps every set code Arena
+    accepts, upper-cased, to the edition it finds, and ``editions`` gives each
+    edition's ``(Scryfall set code, edition type, release date)``. Empty means
     "not known", and callers report and change nothing.
     """
 
@@ -89,7 +91,6 @@ class ArenaRules:
     support: ArenaSupport = field(default_factory=ArenaSupport)
     format: ArenaFormat | None = None
     rules_version: str = ""
-    forge_release: str = ""
 
     @property
     def known(self):
@@ -147,8 +148,7 @@ def rules_from_document(payload):
         return ArenaRules()
     return ArenaRules(
         support=support, format=rules_format,
-        rules_version=str(payload.get("rulesVersion") or ""),
-        forge_release=str(payload.get("forgeRelease") or ""))
+        rules_version=str(payload.get("rulesVersion") or ""))
 
 
 def load_arena_rules(path):
@@ -172,14 +172,15 @@ def _support(cards, set_codes, editions):
         names.add(key)
         # A card's own printings, never another card's: a face can share a
         # name with a card (Emeritus of Conflict turns over to Lightning Bolt).
-        printings[key] = frozenset(str(p) for p in card.get("printings") or ())
+        # In Arena's order, once each.
+        printings[key] = tuple(dict.fromkeys(str(p) for p in card.get("printings") or ()))
         for face in card.get("faces") or ():
             face_key = card_key(face)
             if face_key:
                 names.add(face_key)
                 faces_of.setdefault(face_key, key)
     for face_key, owner in faces_of.items():
-        printings.setdefault(face_key, printings.get(owner, frozenset()))
+        printings.setdefault(face_key, printings.get(owner, ()))
     codes = {str(code).upper(): str(edition) for code, edition in set_codes.items()}
     table = {}
     for edition in editions:

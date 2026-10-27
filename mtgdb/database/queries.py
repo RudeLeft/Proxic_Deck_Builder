@@ -126,7 +126,7 @@ class CardQueryMixin:
     def printings_named(self, name):
         """Every printing stored under exactly ``name``, tokens and art cards excluded.
 
-        Proxic Arena export reads these to find a printing Forge also has
+        Proxic Arena export reads these to find a printing Arena also has
         (ARN-011). Unranked: the caller decides which printing it wants.
         """
         placeholders = ",".join("?" * len(NON_CARD_LAYOUTS))

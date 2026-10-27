@@ -77,11 +77,17 @@ def read_deck_text(path):
     return text.lstrip("\ufeff")
 
 
-def deck_to_text(deck, include_side=True):
+# Proxic Arena's decklist marks its token section with this comment line
+# (Arena spec 0022): every line after it is a token card, sent for its picture.
+TOKENS_SECTION = "// Tokens"
+
+
+def deck_to_text(deck, include_side=True, tokens=()):
     """Serialize a portable TXT decklist preserving exact printings.
 
     ``include_side=False`` writes the main deck alone, for a destination that
-    has no sideboard (Proxic Arena export).
+    has no sideboard (Proxic Arena export). ``tokens``, ``(card, quantity)``
+    pairs, adds Proxic Arena's token section after the deck.
     """
     lines = [f"// {deck.name} ({deck.fmt})", ""]
     lines.extend(_line_for(entry) for entry in deck.entries("main"))
@@ -89,6 +95,10 @@ def deck_to_text(deck, include_side=True):
     if side:
         lines.extend(("", "Sideboard"))
         lines.extend(_line_for(entry) for entry in side)
+    if tokens:
+        lines.extend(("", TOKENS_SECTION))
+        lines.extend(
+            _line_for({"card": card, "qty": quantity}) for card, quantity in tokens)
     return "\n".join(lines) + "\n"
 
 

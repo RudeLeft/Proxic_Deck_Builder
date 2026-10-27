@@ -1,17 +1,20 @@
 """Tokens and a Proxic Arena deck: the token cards a deck holds, and the tokens its cards make.
 
-A token is not a card a deck can hold. Proxic Arena makes tokens itself during
-a game, and its import refuses a decklist that names one ("Forge does not know
-a card named Ape"). So a token, emblem or art card the player put in the deck
-is left out of the export and out of its card count (ARN-013); the stored
-``content_kind`` -- the card database's own classification of every printing
--- says which entries those are, never a second reading of the type line.
+A token is not one of a deck's cards, but its picture is worth sending: in a
+game, Proxic Arena dresses a token in the picture of a token card a deck
+brought, matched by name (Arena spec 0022). So a token card the player put in
+the main deck travels in the decklist's Tokens section, for its picture only:
+it is not counted toward the deck's size and is never checked as a card
+(ARN-013). An emblem or art card is neither a card nor a token Arena draws, so
+it is left out. Which entries are which is the card database's own
+``content_kind``, never a second reading of the type line.
 
-Scryfall also links a card to the tokens it makes: the card's ``related_parts``
-hold an entry whose component is ``token`` for each one. The export lists those
-so the player knows what to expect in play (ARN-010); Arena makes them, so the
-player has nothing to add. The wording and the dialog belong to the Arena
-export UI, and the name key belongs to ``arena_support``.
+Scryfall also links a card to the tokens it makes: the card's
+``related_parts`` hold an entry whose component is ``token`` for each one. A
+token the deck's cards make with no token card of that name in the deck still
+plays, without a picture, so the player is told -- under the deck and in the
+export window -- and never stopped (ARN-010). The wording belongs to the UI,
+and the name key to ``arena_support``.
 
 Only the main deck counts, because the sideboard is not exported. Tokens are
 grouped by name and type line, so several Scryfall tokens of one kind (a 1/1 and
@@ -28,6 +31,7 @@ from mtgdb.deck.model import Deck
 
 # The card database's content kinds that are not cards a deck holds.
 _GAME_PIECE_KINDS = frozenset({"token", "emblem", "art"})
+_TOKEN_KIND = "token"
 
 
 def is_game_piece(card):
@@ -35,27 +39,56 @@ def is_game_piece(card):
     return str((card or {}).get("content_kind") or "").casefold() in _GAME_PIECE_KINDS
 
 
-def without_game_pieces(deck):
-    """Return ``(deck, names left out)``: ``deck`` without its tokens, emblems and art cards.
+def is_token_card(card):
+    """True for a token card, whose picture a Proxic Arena deck can bring."""
+    return str((card or {}).get("content_kind") or "").casefold() == _TOKEN_KIND
 
-    ``deck`` is not changed. When it holds none, it is returned as it is. The
-    names are the main deck's, as stored, once each, in order of name.
+
+def _token_name_key(name):
+    return front_face_name(name).casefold()
+
+
+@dataclass(frozen=True)
+class ArenaDeckParts:
+    """A deck as Proxic Arena takes it: its cards, its token cards, and what is left out.
+
+    ``cards`` is a detached deck without any game piece. ``tokens`` holds the
+    main deck's token cards, one per token name (the first printing of a name,
+    as for any picture), each ``(card, quantity)``. ``left_out`` names the
+    main deck's emblems and art cards, which travel nowhere.
     """
-    pieces = [entry for entry in deck.iter_entries() if is_game_piece(entry.get("card"))]
-    if not pieces:
-        return deck, ()
-    kept = Deck(name=deck.name, fmt=deck.fmt)
+
+    cards: Deck
+    tokens: tuple = ()
+    left_out: tuple = ()
+
+
+def split_for_arena(deck):
+    """Return the ``ArenaDeckParts`` of ``deck``, which is not changed."""
+    cards = Deck(name=deck.name, fmt=deck.fmt)
+    tokens = {}
+    left_out = {}
     for card, quantity, board in deck.snapshot_entries():
-        if quantity > 0 and not is_game_piece(card):
-            kept.add(card, board, quantity)
-    names = {}
-    for entry in pieces:
-        if entry.get("board") != "main":
+        if quantity <= 0:
             continue
-        name = str((entry.get("card") or {}).get("name") or "").strip()
-        if name:
-            names.setdefault(name.casefold(), name)
-    return kept, tuple(sorted(names.values(), key=str.casefold))
+        if not is_game_piece(card):
+            cards.add(card, board, quantity)
+            continue
+        if board != "main":
+            continue
+        name = str((card or {}).get("name") or "").strip()
+        if not name:
+            continue
+        if is_token_card(card):
+            key = _token_name_key(name)
+            held = tokens.get(key)
+            tokens[key] = (held[0], held[1] + quantity) if held else (card, quantity)
+        else:
+            left_out.setdefault(name.casefold(), name)
+    return ArenaDeckParts(
+        cards=cards,
+        tokens=tuple(tokens.values()),
+        left_out=tuple(sorted(left_out.values(), key=str.casefold)))
 
 
 @dataclass(frozen=True)
@@ -73,7 +106,7 @@ def deck_tokens(deck):
     found = {}
     for entry in deck.entries("main"):
         card = entry.get("card") or {}
-        # A token card does not make itself; it is left out of the export.
+        # A token card does not make itself.
         if is_game_piece(card):
             continue
         maker = front_face_name(card.get("name"))
@@ -95,3 +128,33 @@ def deck_tokens(deck):
     return tuple(
         ArenaToken(item["name"], item["type_line"], tuple(item["makers"]))
         for item in ordered)
+
+
+def token_status(deck):
+    """Return ``(held, missing)``: the tokens the main deck's cards make, split
+    by whether a token card of that name is in the main deck.
+
+    Matched by name alone, as Arena matches a picture to a token in play
+    (owner decision S4): any Ape token card dresses every Ape.
+    """
+    held_names = {
+        _token_name_key((entry.get("card") or {}).get("name"))
+        for entry in deck.entries("main") if is_token_card(entry.get("card"))}
+    held, missing = [], []
+    for token in deck_tokens(deck):
+        (held if _token_name_key(token.name) in held_names else missing).append(token)
+    return tuple(held), tuple(missing)
+
+
+def token_card_count(deck):
+    """How many token cards the main deck holds, outside its card count."""
+    return sum(
+        int(entry.get("qty") or 0) for entry in deck.entries("main")
+        if is_token_card(entry.get("card")))
+
+
+def counted_cards(deck, board="main"):
+    """A board's card count without its game pieces, as Arena counts it."""
+    return sum(
+        int(entry.get("qty") or 0) for entry in deck.entries(board)
+        if not is_game_piece(entry.get("card")))

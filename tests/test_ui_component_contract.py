@@ -195,7 +195,7 @@ def main():
             set(C._BUTTON_STYLES) == {
                 "standard", "primary", "compact", "compact_primary",
                 "deck", "picker", "search_picker", "search_section",
-                "dense", "dense_primary",
+                "dense", "dense_primary", "menu_action",
             }),
         "single-choice indicators contrast with every row background they sit on": (
             # Tk paints a radio indicator with selectcolor when on and with the

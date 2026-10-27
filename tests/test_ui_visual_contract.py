@@ -754,8 +754,9 @@ def main():
             and combined_source.count('text="Close", role="compact"') >= 4),
         "count headings use one canonical card-count grammar": (
             'text="RESULTS | 0 CARDS"' in combined_source
-            and 'MAINBOARD | {card_count_text(self.deck.total(\'main\'))}' in combined_source
-            and 'SIDEBOARD | {card_count_text(self.deck.total(\'side\'))}' in combined_source
+            # Counted without token, emblem or art cards (DUI-016, ARN-016).
+            and 'MAINBOARD | {card_count_text(counted_cards(self.deck, \'main\'))}' in combined_source
+            and 'SIDEBOARD | {card_count_text(counted_cards(self.deck, \'side\'))}' in combined_source
             and 'RESULTS | {card_count_text(count)}' in combined_source
             and 'text="COMPARE | 0 CARDS SELECTED"' in comparison_controls_source
             and 'RESULTS GALLERY | {card_count_text(count)}' in sources["card_detail.py"]

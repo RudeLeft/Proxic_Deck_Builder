@@ -45,10 +45,11 @@ SOURCE_MARKERS = {
         "class ArenaToken", "def deck_tokens("),
     "mtgdb/deck/arena_printings.py": (
         "def printing_accepted(", "def arena_export_deck("),
-    "mtgdb/arena/export.py": ("def art_filename(", "def build_export("),
+    "mtgdb/deck/arena_check.py": ("class ArenaCheck", "def check_for_arena("),
+    "mtgdb/arena/export.py": ("def art_filename(", "def build_package("),
     "mtgdb/arena/connection.py": ("def link_computer(", "def obtain_rules("),
     "mtgdb/ui/arena_connection.py": (
-        "class ArenaConnectionMixin", "def _open_arena_connection("),
+        "class ArenaLinkForm", "def arena_link_line("),
     "mtgdb/core/secret_store.py": ("def write_secret(", "def read_secret("),
     "mtgdb/deck/sessions.py": ("class DeckSession", "class DeckSessionManager"),
     "mtgdb/database/authorities.py": ("CATALOG_AUTHORITIES =", "SUBTYPE_AUTHORITIES ="),
@@ -86,7 +87,7 @@ SOURCE_MARKERS = {
     "mtgdb/ui/deck.py": ("class DeckEditorMixin", "def _build_deck_pane("),
     "mtgdb/ui/deck_files.py": ("class DeckFileWorkflowMixin", "def _open_deck("),
     "mtgdb/ui/arena_export.py": (
-        "class ArenaExportMixin", "def _export_arena("),
+        "class ArenaExportMixin", "def _export_arena(", "class ArenaExportWindow"),
     "mtgdb/ui/deck_stats.py": ("class DeckStatsMixin", "def _render_legality("),
     "mtgdb/ui/workspace.py": ("WORKSPACE_AUTOSAVE_MS", "class WorkspaceMixin"),
     "mtgdb/ui/database_sync.py": ("class DatabaseSyncMixin", "def _poll_sync_events("),

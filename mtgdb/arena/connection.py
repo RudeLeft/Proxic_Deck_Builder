@@ -1,11 +1,13 @@
-"""This computer's link to a Proxic Arena server, and the deck rules it downloads.
+"""This computer's link to a Proxic Arena server: the deck rules it downloads and the decks it sends.
 
-Proxic Arena publishes its deck rules (the cards and printings its Forge plays,
-and Open Format's limits) to signed-in players. The Deck Builder is not a
-browser and never holds the player's password, so a player links this computer
-once: Arena's Account page shows a one-time code, the player types it here, and
-Arena answers with a device token that can download the rules and do nothing
-else (Arena spec 0021). The token is kept sealed to this Windows user
+Proxic Arena publishes its deck rules (the cards and printings it plays, and
+Open Format's limits) to signed-in players. The Deck Builder is not a browser
+and never holds the player's password, so a player links this computer once:
+Arena's Account page shows a one-time code, the player types it in the Proxic
+Arena Export window, and Arena answers with a device token (Arena spec 0021).
+The token downloads the rules, reads the player's deck names, asks which
+pictures their decks already hold, and sends a deck to their Deck Depot (spec
+0022) -- nothing else. It is kept sealed to this Windows user
 (``core/secret_store.py``).
 
 Before each Proxic Arena export the rules are asked for again. Arena answers
@@ -44,9 +46,14 @@ LINK_FILE = "arena_link.json"
 TOKEN_FILE = "arena_link.token"
 RULES_FILE = "arena_rules.json"
 RULES_META_FILE = "arena_rules.meta.json"
-# The first request after an Arena update asks its Forge for the card pool,
-# which takes several seconds; later ones are answered at once.
+# The first request after an Arena update builds its card list, which takes
+# several seconds; later ones are answered at once.
 REQUEST_TIMEOUT = 60
+# A send carries every picture of a deck and Arena checks every card before it
+# answers; on a slow connection that is minutes.
+SEND_TIMEOUT = 600
+# Arena answers about at most this many pictures at once: a package's limit.
+KNOWN_PICTURES_LIMIT = 200
 MAX_RULES_BYTES = 64 * 1024 * 1024
 
 # Where the rules came from, for the export report.
@@ -228,6 +235,147 @@ def fetch_rules(address, token, etag="", opener=None):
         return RulesFetch("unavailable")
     except (urllib.error.URLError, OSError, ValueError):
         return RulesFetch("unavailable")
+
+
+@dataclass(frozen=True)
+class DeckNamesFetch:
+    """Your Deck Depot's deck names: ``ok`` (with ``names``), ``unauthorized``, or ``unavailable``."""
+
+    status: str
+    names: tuple = ()
+
+
+def fetch_deck_names(address, token, opener=None):
+    """Ask Arena for the names of the decks in this player's Deck Depot (spec 0022)."""
+    try:
+        request = _request(
+            f"{normalize_address(address)}/api/deck-builder/deck-names",
+            headers={"Authorization": f"Bearer {token}"})
+        with (opener or _opener()).open(request, timeout=REQUEST_TIMEOUT) as response:
+            payload = json.loads(_read_body(response).decode("utf-8"))
+        names = tuple(str(name) for name in payload["names"])
+    except urllib.error.HTTPError as error:
+        return DeckNamesFetch("unauthorized" if error.code == 401 else "unavailable")
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return DeckNamesFetch("unavailable")
+    return DeckNamesFetch("ok", names)
+
+
+def fetch_known_pictures(address, token, hashes, opener=None):
+    """Of ``hashes``, the pictures this player's decks on Arena already hold.
+
+    Any failure answers "none": every picture is then sent, which is only
+    slower.
+    """
+    wanted = sorted(set(hashes))[:KNOWN_PICTURES_LIMIT]
+    if not wanted:
+        return frozenset()
+    body = json.dumps({"sha256": wanted}).encode("utf-8")
+    try:
+        request = _request(
+            f"{normalize_address(address)}/api/deck-builder/pictures/known",
+            method="POST", body=body,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+        with (opener or _opener()).open(request, timeout=REQUEST_TIMEOUT) as response:
+            payload = json.loads(_read_body(response).decode("utf-8"))
+        return frozenset(str(sha) for sha in payload["known"]) & frozenset(wanted)
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return frozenset()
+
+
+# Statuses of one send.
+SENT = "sent"
+DUPLICATE = "duplicate"
+NAME_TAKEN = "name_taken"
+REFUSED = "refused"
+UNAUTHORIZED = "unauthorized"
+UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class SendResult:
+    """What Arena answered one send.
+
+    ``sent``: the deck is in the Deck Depot as ``deck_name``. ``duplicate``:
+    this exact package is already there, as ``deck_name``. ``name_taken``: a
+    deck of yours already has the name. ``refused``: Arena's import said why,
+    in ``detail`` and ``problems``. ``unauthorized``: the link was removed.
+    ``unavailable``: Arena could not be reached.
+    """
+
+    status: str
+    deck_name: str = ""
+    detail: str = ""
+    problems: tuple = ()
+    deck_id: str = ""
+    total_cards: int = 0
+    token_pictures: int = 0
+
+
+def _multipart(fields, file_field, filename, data):
+    """Encode ``fields`` and one file as ``multipart/form-data``: ``(body, content type)``."""
+    boundary = f"----ProxicDeckBuilder{os.urandom(12).hex()}"
+    parts = []
+    for name, value in fields.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n".encode("utf-8"))
+    safe = filename.replace('"', "").replace("\r", "").replace("\n", "")
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; '
+        f'filename="{safe}"\r\nContent-Type: application/zip\r\n\r\n'.encode("utf-8"))
+    parts.append(data)
+    parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def send_deck(address, token, data, filename, name=None, opener=None):
+    """Send one deck package to this player's Deck Depot (Arena spec 0022)."""
+    fields = {"name": name} if name else {}
+    body, content_type = _multipart(fields, "package", filename, data)
+    try:
+        request = _request(
+            f"{normalize_address(address)}/api/deck-builder/decks", method="POST",
+            body=body, headers={
+                "Authorization": f"Bearer {token}", "Content-Type": content_type})
+        with (opener or _opener()).open(request, timeout=SEND_TIMEOUT) as response:
+            payload = json.loads(_read_body(response).decode("utf-8"))
+        return SendResult(
+            SENT, deck_name=str(payload.get("displayName") or ""),
+            deck_id=str(payload.get("deckId") or ""),
+            total_cards=int(payload.get("totalCards") or 0),
+            token_pictures=int(payload.get("tokenPictures") or 0))
+    except urllib.error.HTTPError as error:
+        if error.code == 401:
+            return SendResult(UNAUTHORIZED)
+        refusal = _refusal(error)
+        code = str(refusal.get("errorCode") or "")
+        detail = str(refusal.get("detail") or "")
+        problems = tuple(str(problem) for problem in refusal.get("problems") or ())
+        if code == "DUPLICATE_PACKAGE":
+            return SendResult(DUPLICATE, deck_name=_quoted(detail), detail=detail)
+        if code == "DECK_NAME_TAKEN":
+            return SendResult(
+                NAME_TAKEN, deck_name=problems[0] if problems else "", detail=detail)
+        if error.code in (400, 409, 413, 422):
+            return SendResult(REFUSED, detail=detail, problems=problems)
+        return SendResult(UNAVAILABLE, detail=detail)
+    except (urllib.error.URLError, OSError, ValueError, TypeError):
+        return SendResult(UNAVAILABLE)
+
+
+def _refusal(error):
+    try:
+        payload = json.loads(error.read().decode("utf-8"))
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _quoted(detail):
+    """The name inside the first pair of straight quotes, or ""."""
+    parts = detail.split('"')
+    return parts[1] if len(parts) >= 3 else ""
 
 
 class ArenaConnectionStore:

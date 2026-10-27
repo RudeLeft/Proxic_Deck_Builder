@@ -2422,6 +2422,31 @@ class SearchFeatureMixin:
         self._update_search_filter_summary()
         return True
 
+    def _search_for_token_names(self, names):
+        """Search for token cards by name, with the Search Scope set to Tokens.
+
+        The Proxic Arena Export window and the deck panel offer this for a
+        token the deck's cards make that the deck holds no token card of
+        (ARN-010), so the player can add one for its picture.
+        """
+        names = [str(name) for name in (names or ()) if str(name or "").strip()]
+        if not names:
+            return
+        self._clear_search()
+        self._selected_traits = {"content_tokens"}
+        self._content_types_from_traits()
+        self._refresh_split_trait_button_texts()
+        self._on_content_filter_change()
+        self._set_exact_name_batch(names)
+        self._search_printings.select_all_present_types_and_sets()
+        self._update_search_filter_summary()
+        self._do_search()
+        self._clear_result_selection()
+        try:
+            self.results_tv.focus_set()
+        except tk.TclError:
+            pass
+
     def _on_content_filter_change(self):
         """Search Scope changed; rebuild the scoped vocabulary."""
         self._refresh_search_catalogs()

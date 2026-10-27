@@ -326,6 +326,7 @@ _BUTTON_STYLES = {
     "compact": "Compact.TButton",
     "compact_primary": "CompactPrimary.TButton",
     "deck": "DeckControl.TButton",
+    "menu_action": "MenuBarAction.TButton",
     "picker": "Picker.TButton",
     "search_picker": "SearchPicker.TButton",
     "search_section": "SearchSection.TButton",

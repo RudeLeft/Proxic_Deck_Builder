@@ -315,6 +315,12 @@ def install_ui_styles(root):
                       foreground=p["text"], font=FONT_BODY,
                       padding=PAD_DECK, bordercolor=p["border"])
     _map_button(style, "DeckControl.TButton")
+    # The menu bar's one action button (Proxic Arena Export): a menu button's
+    # size and font, outlined in gold so it reads as an action, not a menu.
+    _configure_button(style, "MenuBarAction.TButton", background=p["surface2"],
+                      foreground=p["text"], font=FONT_BODY,
+                      padding=PAD_STANDARD, bordercolor=p["accent"])
+    _map_button(style, "MenuBarAction.TButton")
     _configure_button(style, "Picker.TButton", background=p["surface2"],
                       foreground=p["text"], font=FONT_BODY,
                       padding=PAD_PICKER, bordercolor=p["border"])
