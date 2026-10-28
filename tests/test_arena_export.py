@@ -22,7 +22,7 @@ from mtgdb.arena.export import (
 )
 from mtgdb.core.background_jobs import JobCancelled
 from mtgdb.deck.arena_check import check_for_arena
-from mtgdb.deck.arena_support import rules_from_document
+from mtgdb.deck.arena_support import load_arena_rules, rules_from_document
 from mtgdb.deck.arena_tokens import split_for_arena
 from mtgdb.deck.io import deck_to_text
 from mtgdb.deck.model import Deck
@@ -524,6 +524,56 @@ def _shipped_rules_printing_check():
                                ("Space Beleren", beleren_rows[0]))))
 
 
+def _keep_printing_check():
+    """ARN-011: an Arena that takes any printing gets the deck's own, but for the cards it marks."""
+    from dataclasses import replace
+
+    from mtgdb.deck.arena_printings import arena_export_deck, printing_accepted
+
+    support = replace(
+        _printing_support(), any_printing=True,
+        printing_matters=frozenset({"balloon_stand"}),
+        names=_printing_support().names | {"balloon_stand"},
+        printings=dict(_printing_support().printings, balloon_stand=("UNF 1",)),
+        set_codes=dict(_printing_support().set_codes, UNF="UNF"),
+        editions=dict(_printing_support().editions, UNF=("unf", "", "")))
+    island_mdd = _row("island-mdd", "Island", "mdd", "294")
+    bolt_promo = _row("bolt-promo", "Lightning Bolt", "plst", "M10-146")
+    stand_promo = _row("stand-promo", "Balloon Stand", "punf", "1p")
+    rows = {"Balloon Stand": [stand_promo, _row("stand-unf", "Balloon Stand", "unf", "1")]}
+    deck = Deck("Mine", "modern")
+    deck.add(island_mdd, "main", 20)
+    deck.add(bolt_promo, "main", 4)
+    deck.add(stand_promo, "main", 1)
+    exported, swaps = arena_export_deck(deck, support, lambda name: rows.get(name, []))
+    text = deck_to_text(exported, include_side=False)
+
+    document = json.loads(json.dumps(_RULES_DOCUMENT))
+    document["format"]["anyPrinting"] = True
+    document["cards"].append({"name": "Balloon Stand", "faces": ["Balloon Stand"],
+                              "printings": ["TST 4"], "printingMatters": True})
+    read = rules_from_document(document).support
+    older = rules_from_document(_RULES_DOCUMENT).support
+    shipped = load_arena_rules(ROOT / "assets/arena/deck_rules.json").support
+    return (
+        # The player's printings and pictures go as the deck holds them...
+        printing_accepted(support, island_mdd) and printing_accepted(support, bolt_promo)
+        and "20 Island [MDD:294]" in text and "4 Lightning Bolt [PLST:M10-146]" in text
+        # ...but a card whose printing changes it still goes as one Arena has.
+        and not printing_accepted(support, stand_promo)
+        and [(swap.name, swap.to_set, swap.to_number) for swap in swaps]
+        == [("Balloon Stand", "UNF", "1")]
+        and "1 Balloon Stand [UNF:1]" in text
+        # The rules document says so; an older Arena's, which does not, swaps.
+        and read.any_printing and read.printing_matters == {"balloon_stand"}
+        and not older.any_printing and older.printing_matters == frozenset()
+        # The shipped copy is Arena 1.13.0's: any printing, 24 cards strict.
+        and shipped.any_printing and len(shipped.printing_matters) == 24
+        and {"everythingamajig", "garbage_elemental", "sly_spy", "balloon_stand"}
+        <= shipped.printing_matters
+        and printing_accepted(shipped, bolt_promo))
+
+
 def _unchanged_package_check():
     """ARN-011: a deck of printings Arena has goes exactly as the deck holds it."""
     from mtgdb.deck.arena_printings import arena_export_deck
@@ -818,6 +868,8 @@ def main():
         "a printing Arena lacks goes as one it has, in Arena's order": _printing_swap_check(),
         "the real Island and Space Beleren refusals go as printings Arena has":
             _shipped_rules_printing_check(),
+        "an Arena that takes any printing gets the deck's own, but for the cards it marks":
+            _keep_printing_check(),
         "a deck of printings Arena has goes exactly as it is": _unchanged_package_check(),
         "the deck check reads in plain words, red for what Arena refuses": _rows_check(),
         "the name on Arena is checked as Arena compares names": _name_check(),

@@ -1,8 +1,9 @@
 """Proxic Arena's deck rules as this application reads them, and the names a deck carries that Arena cannot play.
 
-Proxic Arena publishes its deck rules (its specs 0021 and 0022): every card
-it can play, every printing of each it accepts -- in the order Arena prefers
-them -- the set codes it answers to, and Open Format's limits. The Deck Builder
+Proxic Arena publishes its deck rules (its specs 0021, 0022 and 0024): every
+card it can play, every printing of each it has -- in the order Arena prefers
+them -- the set codes it answers to, whether it takes any printing of a card it
+plays and which cards' printings change them, and Open Format's limits. The Deck Builder
 follows that document and knows nothing of how Arena plays a card, so when
 Arena's game engine changes, every export follows with no release here
 (DECK-012, ARN-015).
@@ -53,12 +54,20 @@ class ArenaSupport:
     accepts, upper-cased, to the edition it finds, and ``editions`` gives each
     edition's ``(Scryfall set code, edition type, release date)``. Empty means
     "not known", and callers report and change nothing.
+
+    ``any_printing`` is Arena's ``format.anyPrinting`` (its spec 0024): Arena
+    keeps any printing of a card it plays, except the cards keyed in
+    ``printing_matters`` (and their faces), whose printing changes the card, so
+    only a printing listed for them is taken. False, as an older Arena's rules
+    leave it, means every card's printing must be one listed.
     """
 
     names: frozenset = frozenset()
     printings: object = field(default_factory=_empty_mapping)
     set_codes: object = field(default_factory=_empty_mapping)
     editions: object = field(default_factory=_empty_mapping)
+    any_printing: bool = False
+    printing_matters: frozenset = frozenset()
 
     @property
     def knows_printings(self):
@@ -142,7 +151,8 @@ def rules_from_document(payload):
             part not in payload for part in RULES_DOCUMENT_PARTS):
         return ArenaRules()
     try:
-        support = _support(payload["cards"], payload["setCodes"], payload["editions"])
+        support = _support(payload["cards"], payload["setCodes"], payload["editions"],
+                           payload["format"].get("anyPrinting") is True)
         rules_format = _format(payload["format"], payload["cards"])
     except (TypeError, ValueError, KeyError, AttributeError):
         return ArenaRules()
@@ -161,15 +171,18 @@ def load_arena_rules(path):
     return rules_from_document(payload)
 
 
-def _support(cards, set_codes, editions):
+def _support(cards, set_codes, editions, any_printing=False):
     names = set()
     printings = {}
     faces_of = {}
+    matters = set()
     for card in cards:
         key = card_key(card["name"])
         if not key:
             continue
         names.add(key)
+        if card.get("printingMatters") is True:
+            matters.add(key)
         # A card's own printings, never another card's: a face can share a
         # name with a card (Emeritus of Conflict turns over to Lightning Bolt).
         # In Arena's order, once each.
@@ -179,8 +192,12 @@ def _support(cards, set_codes, editions):
             if face_key:
                 names.add(face_key)
                 faces_of.setdefault(face_key, key)
+    own = set(printings)
     for face_key, owner in faces_of.items():
         printings.setdefault(face_key, printings.get(owner, ()))
+        # A face takes its card's printings, and so whether they matter.
+        if face_key not in own and owner in matters:
+            matters.add(face_key)
     codes = {str(code).upper(): str(edition) for code, edition in set_codes.items()}
     table = {}
     for edition in editions:
@@ -190,7 +207,8 @@ def _support(cards, set_codes, editions):
             str(edition.get("date") or ""))
     return ArenaSupport(
         names=frozenset(names), printings=MappingProxyType(printings),
-        set_codes=MappingProxyType(codes), editions=MappingProxyType(table))
+        set_codes=MappingProxyType(codes), editions=MappingProxyType(table),
+        any_printing=any_printing, printing_matters=frozenset(matters))
 
 
 def _format(raw, cards):

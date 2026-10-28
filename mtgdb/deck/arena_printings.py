@@ -1,12 +1,16 @@
 """Which printing of each card a Proxic Arena export uses.
 
-Proxic Arena checks the printing as well as the name. A decklist line
-``N Name [SET:NUM]`` is accepted only when Arena holds that exact printing --
-the set code one its rules list, the collector number equal -- and one line
-that is not refuses the whole import. Arena stays strict on purpose, so the
-export picks a printing Arena has instead.
+Since its spec 0024 Proxic Arena keeps any printing of a card it plays, so
+the export sends every card as the deck holds it, the player's own picture
+with it. The exception is a card whose printing changes what it does (the
+Attractions, Everythingamajig...), which Arena's rules mark: Arena takes only a
+printing it lists for those, and so does an older Arena, whose rules do not say
+``anyPrinting``, for every card. There a decklist line ``N Name [SET:NUM]`` is
+accepted only when Arena holds that exact printing -- the set code one its
+rules list, the collector number equal -- and one line that is not refuses the
+whole import, so the export picks a printing Arena has instead.
 
-A card whose printing Arena has is exported exactly as the deck holds it.
+A card whose printing Arena takes is exported exactly as the deck holds it.
 Otherwise the export uses, in order of preference:
 
 1. the same set, with Arena's collector number, when Arena has that set;
@@ -66,12 +70,17 @@ def _collector(card):
 def printing_accepted(support, card):
     """Whether Proxic Arena accepts ``card`` as the deck holds it.
 
-    A card with no set code is written by name and is always accepted. A name
-    the rules have no printings for is not this module's question -- the name
-    check reports it -- so it is left as it is.
+    A card with no set code is written by name and is always accepted, and so
+    is any printing when Arena takes any (``any_printing``) of a card whose
+    printing does not change it. A name the rules have no printings for is not
+    this module's question -- the name check reports it -- so it is left as it
+    is.
     """
-    printings = support.printings.get(_key(card))
+    key = _key(card)
+    printings = support.printings.get(key)
     if not printings:
+        return True
+    if support.any_printing and key not in support.printing_matters:
         return True
     set_code = _set_code(card)
     if not set_code:

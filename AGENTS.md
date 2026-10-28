@@ -1187,7 +1187,7 @@ every feature together and is exempt.
 - **DECK-012 — MUST:** Tell the user which of a deck's cards Proxic Arena
   cannot play, and keep every part of that answer in its owner. Proxic Arena
   resolves a card by name and then checks its printing: a name it has no card
-  for refuses the whole import, and so does a printing it does not have, which
+  for refuses the whole import, and so does a printing it does not take, which
   ARN-011 prevents. `deck/arena_support.py` owns the lookup key and the
   comparison; `deck/arena_check.py` gathers the answer; `ui/assets.py` owns the
   built-in copy's location; `ui/arena_export.py` owns the words. The answer
@@ -1200,9 +1200,10 @@ every feature together and is exempt.
   multi-face name by its FRONT face, which is the face Proxic Arena files the
   card under. Both apostrophe spellings are dropped although Proxic Arena drops
   only one, because two spellings of one name MUST NOT read as two cards. What
-  Arena plays -- its cards, the printings it accepts in the order it prefers
-  them, the set codes it answers to, and its format's limits -- is Arena's own
-  deck rules document (Arena specs 0021, 0022), never a list this repository
+  Arena plays -- its cards, the printings it has in the order it prefers
+  them, the set codes it answers to, whether it takes any printing and which
+  cards' printings change them, and its format's limits -- is Arena's own
+  deck rules document (Arena specs 0021, 0022, 0024), never a list this repository
   builds, so a change on Arena's side reaches every send with no release here
   (ARN-015). `deck/arena_support.py` MUST read that document in its one shape
   wherever it came from, MUST keep each card's printings in the document's
@@ -1343,8 +1344,15 @@ every feature together and is exempt.
   make no token and that holds no token card MUST NOT mention tokens. _Verification:_ **AUTO**.
 - **ARN-011 — MUST:** Send a printing Proxic Arena accepts for every main-deck
   card, because Arena checks the printing as well as the name and one mismatch
-  refuses the whole import; Arena stays strict, so the send adapts (owner
-  decision, 2026-10-23). A line `N Name [SET:NUM]` is accepted when Arena's
+  refuses the whole import; the send adapts to Arena, never the other way
+  (owner decision, 2026-10-23). Since Arena 1.13.0 (its spec 0024, owner
+  2026-10-27) Arena keeps any printing of a card it plays, so the player keeps
+  the printing and picture they picked: when the rules say `anyPrinting`, every
+  card MUST be sent as the deck holds it, except a card the rules mark
+  `printingMatters` (the Attractions, Everythingamajig, Garbage Elemental, Sly
+  Spy: their printing changes the card), which follows the strict rule below.
+  Rules without `anyPrinting` (an older Arena) apply the strict rule to every
+  card. Strictly, a line `N Name [SET:NUM]` is accepted when Arena's
   rules map SET to an edition holding that card at exactly NUM; a line with no
   set resolves by name and is always accepted. A printing Arena has MUST be sent
   as the deck holds it. Otherwise the send MUST use, in order: the same set with
