@@ -12,8 +12,8 @@ it is left out. Which entries are which is the card database's own
 Scryfall also links a card to the tokens it makes: the card's
 ``related_parts`` hold an entry whose component is ``token`` for each one. A
 token the deck's cards make with no token card of that name in the deck still
-plays, without a picture, so the player is told -- under the deck and in the
-export window -- and never stopped (ARN-010). The wording belongs to the UI,
+plays, without a picture, so the export window tells the player and never
+stops the send (ARN-010). The wording belongs to the UI,
 and the name key to ``arena_support``.
 
 Only the main deck counts, because the sideboard is not exported. Tokens are
@@ -144,17 +144,3 @@ def token_status(deck):
     for token in deck_tokens(deck):
         (held if _token_name_key(token.name) in held_names else missing).append(token)
     return tuple(held), tuple(missing)
-
-
-def token_card_count(deck):
-    """How many token cards the main deck holds, outside its card count."""
-    return sum(
-        int(entry.get("qty") or 0) for entry in deck.entries("main")
-        if is_token_card(entry.get("card")))
-
-
-def counted_cards(deck, board="main"):
-    """A board's card count without its game pieces, as Arena counts it."""
-    return sum(
-        int(entry.get("qty") or 0) for entry in deck.entries(board)
-        if not is_game_piece(entry.get("card")))

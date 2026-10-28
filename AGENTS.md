@@ -177,7 +177,7 @@ which dependency directions are legal.
 | Card preview & images | `mtgdb/ui/card_detail.py`, `mtgdb/ui/styles.py`, `mtgdb/ui/tokens.py` | `mtgdb/images/service.py`, `mtgdb/core/cache_names.py`, `mtgdb/core/net.py`, `mtgdb/database/constants.py`, `mtgdb/deck/legality.py` |
 | Deck editing | `mtgdb/ui/deck.py`, `mtgdb/ui/tables.py`, `mtgdb/ui/search.py`, `mtgdb/ui/search_checklist.py`, `mtgdb/ui/comparison_controls.py` | `mtgdb/deck/model.py`, `mtgdb/deck/sessions.py` |
 | Deck file open/save/import/export | `mtgdb/ui/deck_files.py`, `mtgdb/ui/set_filters.py` | `mtgdb/deck/io.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/arena_support.py`, `mtgdb/database/db.py`, `mtgdb/database/queries.py`, `mtgdb/database/taxonomy.py` |
-| Proxic Arena export | `mtgdb/ui/arena_export.py`, `mtgdb/ui/arena_connection.py`, `mtgdb/ui/app.py`, `mtgdb/ui/deck.py` | `mtgdb/arena/export.py`, `mtgdb/arena/connection.py`, `mtgdb/core/secret_store.py`, `mtgdb/deck/arena_check.py`, `mtgdb/deck/arena_support.py`, `mtgdb/deck/arena_limits.py`, `mtgdb/deck/arena_tokens.py`, `mtgdb/deck/arena_printings.py`, `mtgdb/database/queries.py`, `mtgdb/printing/service.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/io.py` |
+| Proxic Arena export | `mtgdb/ui/arena_export.py`, `mtgdb/ui/arena_connection.py`, `mtgdb/ui/app.py` | `mtgdb/arena/export.py`, `mtgdb/arena/connection.py`, `mtgdb/core/secret_store.py`, `mtgdb/deck/arena_check.py`, `mtgdb/deck/arena_support.py`, `mtgdb/deck/arena_limits.py`, `mtgdb/deck/arena_tokens.py`, `mtgdb/deck/arena_printings.py`, `mtgdb/database/queries.py`, `mtgdb/printing/service.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/io.py` |
 | Deck statistics | `mtgdb/ui/deck_stats.py`, `mtgdb/ui/comparison.py`, `mtgdb/ui/comparison_controls.py` | `mtgdb/deck/analysis.py`, `mtgdb/deck/legality.py` |
 | Comparison | `mtgdb/ui/comparison.py`, `mtgdb/ui/comparison_controls.py`, `mtgdb/ui/deck.py`, `mtgdb/ui/deck_stats.py` | `mtgdb/comparison/models.py`, `mtgdb/images/service.py` |
 | Printing | `mtgdb/ui/printing.py` | `mtgdb/printing/service.py`, `mtgdb/printing/renderer.py`, `mtgdb/core/background_jobs.py`, `mtgdb/core/cache_names.py`, `mtgdb/core/net.py` |
@@ -230,7 +230,7 @@ only in the module that owns X.
 | `mtgdb/deck/sessions.py` | Typed open-deck sessions, active-index lifecycle, dirty state, default-session enforcement |
 | `mtgdb/deck/arena_support.py` | The normalized Proxic Arena card-name key, reading Arena's deck rules document (the cards and printings it plays in the order it prefers them, the set codes it accepts, its format's limits), and deciding which of a deck's names Proxic Arena cannot play |
 | `mtgdb/deck/arena_limits.py` | Measuring a deck against Arena's format as its rules state it -- the deck's size, copies per name with only the listed basic lands exempt, the Contraption and Attraction side decks -- and finding the legendary permanents a deck holds more than once |
-| `mtgdb/deck/arena_tokens.py` | Dividing a deck into its cards, its token cards (sent as pictures) and its emblems and art cards (left out); finding which tokens the deck's cards make, from Scryfall related parts, and which have no token card in the deck; counting cards without game pieces |
+| `mtgdb/deck/arena_tokens.py` | Dividing a deck into its cards, its token cards (sent as pictures) and its emblems and art cards (left out); finding which tokens the deck's cards make, from Scryfall related parts, and which have no token card in the deck |
 | `mtgdb/deck/arena_printings.py` | Deciding whether Proxic Arena accepts a card's printing by its rules, and which printing it has to send instead: same set first, then the first in Arena's order Scryfall can picture, else the name alone |
 | `mtgdb/deck/arena_check.py` | One detached deck checked against Arena's rules for the export window: its parts, the printings it goes in, its limits, unplayable cards and token pictures, and whether Arena would refuse it |
 | `mtgdb/arena/export.py` | Proxic Arena package contents: the art filename Arena indexes, one image per distinct card name and token, the pictures Arena already holds left out, and the zip built in memory |
@@ -270,7 +270,7 @@ only in the module that owns X.
 | `mtgdb/ui/deck.py` | Deck-pane layout, deck tabs, session-to-widget coordination, native extended board selection, batch quantity/remove/move callbacks, deck-table reconciliation |
 | `mtgdb/ui/deck_files.py` | Own filter-independent TXT open/import, TXT save dialogs, JSON projection/export, and user-selected deck-file paths |
 | `mtgdb/ui/arena_connection.py` | The export window's link form and its linked line |
-| `mtgdb/ui/arena_export.py` | Own the Proxic Arena Export window: the deck's name on Arena, the deck check, the tokens, the send with its progress and cancel, what reached the Deck Depot, and the deck panel's missing-token sentence |
+| `mtgdb/ui/arena_export.py` | Own the Proxic Arena Export window: the deck's name on Arena, the deck check, the tokens, the send with its progress and cancel, and what reached the Deck Depot |
 | `mtgdb/ui/deck_stats.py` | Stats pane dashboard layout, sectioned scrollable presentation, counted curve/type/color legends, mana presentation, draw odds, current-deck seven-row sample-hand interaction + exact-printing hydration/View Hand coordination, basic legality-check presentation |
 | `mtgdb/ui/workspace.py` | Workspace/session coordination, detached Tk snapshot capture, retained Mainboard/Sideboard sash capture/restore, restored-result selection, autosave scheduling and writer shutdown/flush |
 | `mtgdb/ui/database_sync.py` | Refresh scheduling, progress-dialog presentation, Tk polling, completion reconciliation, error/shutdown adaptation |
@@ -317,7 +317,7 @@ have at least two routing examples.
 | `mtgdb/deck/sessions.py` | change active-deck switching/default-session rules<br>change dirty-state or open-session lifecycle | `mtgdb/deck/model.py`; `mtgdb/ui/deck.py`; `mtgdb/ui/workspace.py` | Do not persist workspace files or manipulate widgets here. |
 | `mtgdb/deck/arena_support.py` | change which names count as playable in Proxic Arena<br>change how a decklist is checked against the Proxic Arena card pool<br>change how Arena's deck rules document is read | `mtgdb/ui/arena_export.py`; `mtgdb/arena/connection.py`; `mtgdb/deck/model.py` | Reading and name keys only: fetching and saving the rules belong to the connection, which printing is exported to arena printings, and the notice's wording to the Arena export UI; nothing here judges format legality or deck construction outside Arena. |
 | `mtgdb/deck/arena_limits.py` | change how a deck is measured against Arena's card count or copy limit<br>change how the Contraption and Attraction side decks are counted for the export<br>change which repeated legendary cards Proxic Arena export warns about | `mtgdb/ui/arena_export.py`; `mtgdb/deck/arena_support.py`; `mtgdb/deck/model.py` | Measurement only: the numbers come from Arena's rules document, the refusal's wording and dialog belong to the Arena export UI, and the name key to arena support. |
-| `mtgdb/deck/arena_tokens.py` | change which tokens a deck's cards are listed as able to create<br>change how token related parts are read from stored card data for the Arena export<br>change which deck entries travel as token pictures or are left out<br>change how a board's cards are counted without its tokens | `mtgdb/ui/arena_export.py`; `mtgdb/core/scryfall_json.py`; `mtgdb/deck/arena_support.py` | Finding only: the notice's wording and list belong to the Arena export UI, and parsing a stored JSON column belongs to the shared Scryfall parser. |
+| `mtgdb/deck/arena_tokens.py` | change which tokens a deck's cards are listed as able to create<br>change how token related parts are read from stored card data for the Arena export<br>change which deck entries travel as token pictures or are left out | `mtgdb/ui/arena_export.py`; `mtgdb/core/scryfall_json.py`; `mtgdb/deck/arena_support.py` | Finding only: the notice's wording and list belong to the Arena export UI, and parsing a stored JSON column belongs to the shared Scryfall parser. |
 | `mtgdb/deck/arena_printings.py` | change which printing a Proxic Arena send uses when Arena lacks the deck's own<br>change how a card's set code and collector number are checked against the printings Arena has | `mtgdb/ui/arena_export.py`; `mtgdb/deck/arena_support.py`; `mtgdb/database/queries.py` | Choosing only, and only for the export: the asset belongs to arena support, the card database is read through an injected lookup, the swap list's wording belongs to the Arena export UI, and the saved deck is never changed. |
 | `mtgdb/deck/arena_check.py` | change what the export window measures about a deck<br>change which problems keep a deck from being sent | `mtgdb/ui/arena_export.py`; `mtgdb/deck/arena_limits.py`; `mtgdb/deck/arena_tokens.py`; `mtgdb/deck/arena_printings.py` | Gathering only: each measurement belongs to its own module, and the words to the export window. |
 | `mtgdb/arena/export.py` | change the art filename Proxic Arena looks up or which printing supplies one name's image<br>change what the package holds or which pictures are left out of it | `mtgdb/ui/arena_export.py`; `mtgdb/printing/service.py`; `mtgdb/deck/model.py` | The card-art download, its cache and its HTTP policy stay in printing and are injected here; this owns naming and packaging only. |
@@ -359,7 +359,7 @@ have at least two routing examples.
 | `mtgdb/ui/deck.py` | change deck tabs, board controls, independent Mainboard/Sideboard native multi-selection, or session-to-widget coordination<br>change batch quantity/remove/board-move callbacks, multi-selected exact-name Search routing, global comparison-bar placement, comparison-free deck context menus, deck-table reconciliation, or alternate-printing action invocation | `mtgdb/deck/model.py`; `mtgdb/deck/sessions.py`; `mtgdb/ui/tables.py`; `mtgdb/ui/search.py`; `mtgdb/ui/search_checklist.py`; `mtgdb/ui/comparison_controls.py` | Do not manipulate individual Search controls or perform file IO here. |
 | `mtgdb/ui/deck_files.py` | change filter-independent Open Deck TXT resolution<br>change Open/Save/JSON-export projection, prompts, or user-selected file paths | `mtgdb/deck/io.py`; `mtgdb/deck/file_jobs.py`; `mtgdb/database/queries.py` | Open Deck MUST resolve TXT names against the complete local card database and MUST NOT consume Search/Printings state. TXT parsing/serialization and resolver ranking stay in non-UI owners, and blocking disk/parser work stays off Tk. |
 | `mtgdb/ui/arena_connection.py` | change the export window's link form or its linked line<br>change what linking or unlinking this computer says | `mtgdb/arena/connection.py`; `mtgdb/core/secret_store.py`; `mtgdb/ui/components.py` | Presentation only: the link, the token and the saved rules belong to the connection module, and the network work runs on a worker. |
-| `mtgdb/ui/arena_export.py` | change the Proxic Arena Export window, its rows, its name check, its send progress or cancel<br>change what the window says after a send or a refusal<br>change the deck panel's missing-token sentence | `mtgdb/arena/export.py`; `mtgdb/arena/connection.py`; `mtgdb/deck/arena_check.py`; `mtgdb/printing/service.py` | Presentation only: the package, the requests, the measurements and the playable-name comparison all belong to the Tk-free owners it composes. |
+| `mtgdb/ui/arena_export.py` | change the Proxic Arena Export window, its rows, its name check, its send progress or cancel<br>change what the window says after a send or a refusal | `mtgdb/arena/export.py`; `mtgdb/arena/connection.py`; `mtgdb/deck/arena_check.py`; `mtgdb/printing/service.py` | Presentation only: the package, the requests, the measurements and the playable-name comparison all belong to the Tk-free owners it composes. |
 | `mtgdb/ui/deck_stats.py` | change stats-pane metric-list/curve/mana/type/color presentation or counted legends<br>change draw odds, current-deck sample-hand Draw/View Hand interaction, exact-printing hydration, stale-hand cleanup, or basic legality-check presentation | `mtgdb/deck/analysis.py`; `mtgdb/deck/legality.py`; `mtgdb/deck/model.py`; `mtgdb/ui/comparison_controls.py`; `mtgdb/ui/comparison.py` | Hand generation/statistical formulas and legality rules remain Tk-free; large-card grid rendering stays in the comparison view. |
 | `mtgdb/ui/workspace.py` | change autosave scheduling, detached snapshot submission, or workspace/session coordination<br>change writer shutdown/flush, retained Mainboard/Sideboard sash capture/restore, or restored-result selection coordination | `mtgdb/workspace/repository.py`; `mtgdb/deck/sessions.py`; `mtgdb/ui/search.py` | Do not know individual Search filter controls or implement JSON persistence. |
 | `mtgdb/ui/database_sync.py` | change database refresh scheduling/prompt/progress presentation<br>change Tk polling, completion reconciliation, sync error, or shutdown adaptation | `mtgdb/database/sync.py`; `mtgdb/search/controller.py`; `mtgdb/ui/search.py` | Download/import logic and worker lifecycle stay in the Tk-free sync service. |
@@ -1336,9 +1336,8 @@ every feature together and is exempt.
   cards able to make it, capped with the remainder counted. `deck/arena_tokens.py`
   finds and matches them; `ui/arena_export.py` words a row per token and offers
   **Find token**, which searches for token cards of that name with the Search
-  Scope set to Tokens. The same missing tokens are named under the deck
-  (ARN-016). A deck whose cards make no token and that holds no token card MUST
-  NOT mention tokens. _Verification:_ **AUTO**.
+  Scope set to Tokens. Only the window names them (ARN-016). A deck whose cards
+  make no token and that holds no token card MUST NOT mention tokens. _Verification:_ **AUTO**.
 - **ARN-011 — MUST:** Send a printing Proxic Arena accepts for every main-deck
   card, because Arena checks the printing as well as the name and one mismatch
   refuses the whole import; Arena stays strict, so the send adapts (owner
@@ -1417,15 +1416,14 @@ every feature together and is exempt.
   decision 2026-10-27). No module, string or comment under `mtgdb/` MAY name
   that engine or restate one of its rules, and no tool or workflow here MAY
   read its files. _Verification:_ **AUTO**.
-- **ARN-016 — MUST:** Show a deck's token cards apart from its cards in the deck
-  panel: the Mainboard and Sideboard headings count cards without token, emblem
-  or art cards, the Mainboard heading adds `· N token(s)` when the main deck
-  holds token cards, and those rows are listed after the cards whatever the
-  sort. Under the deck, the tokens its cards make that it holds no token card of
-  (ARN-010) MUST be named with the cards that make them, saying they show
-  without a picture in Proxic Arena, with **Find these tokens in Search**; with
-  none, nothing is shown. `deck/arena_tokens.py` counts and matches; the
-  sentence is `ui/arena_export.py`'s. _Verification:_ **AUTO**.
+- **ARN-016 — MUST NOT:** Name Proxic Arena to a player anywhere but the
+  **Proxic Arena Export** window (`ui/arena_export.py`, `ui/arena_connection.py`)
+  and the menu bar button that opens it (owner decision 2026-10-27). The deck
+  panel, Search, the dialogs and every other screen say nothing about Arena and
+  behave as they would without it: the board headings count every card, token
+  cards included, and sort them like any other row. Wizards' MTG Arena, a
+  different game, is unaffected (the Paper / Arena / MTGO printing filter).
+  _Verification:_ **AUTO**.
 - **DECK-011 — MUST:** Apply deck-construction checks only for explicitly
   verified format profiles. Current Brawl and Competitive Brawl MUST use exactly
   100 cards, singleton construction, and no sideboard; Commander/Commander 1v1
@@ -1524,8 +1522,7 @@ every feature together and is exempt.
 
 - **DUI-016 — MUST:** Do not render a duplicate `N main · N side` count above the
   deck boards. The section headings MUST display `MAINBOARD | N CARDS` and
-  `SIDEBOARD | N CARDS` using current board quantities after every deck refresh,
-  counting cards without token, emblem or art cards (ARN-016).
+  `SIDEBOARD | N CARDS` using current board quantities after every deck refresh.
   _Verification:_ **AUTO**.
 - **DUI-017 — MUST:** Keep user-selected file dialogs on Tk but execute deck TXT
   reading/resolution, TXT serialization/durability, and JSON export disk work on

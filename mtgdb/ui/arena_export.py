@@ -187,27 +187,10 @@ def arena_token_label(token):
     return f"{label}, from {', '.join(makers)}" if makers else label
 
 
-ARENA_TOKEN_HELD = "In your deck: Arena shows its picture in play."
 ARENA_TOKEN_MISSING = "Not in your deck: Arena shows it without a picture."
 ARENA_TOKEN_NOTE = (
     "Token cards go along for their pictures only. They don't count toward the "
     "deck's size, and you can send without them.")
-
-
-def missing_token_hint(missing):
-    """The deck panel's sentence about tokens without a picture, or "" (ARN-010)."""
-    if not missing:
-        return ""
-    count = len(missing)
-    listed = " · ".join(
-        f"{token.name} ({_named(token.makers, ARENA_TOKEN_MAKER_LIMIT)})" if token.makers
-        else token.name
-        for token in missing[:ARENA_INLINE_NAME_LIMIT])
-    if count > ARENA_INLINE_NAME_LIMIT:
-        listed += f" · and {count - ARENA_INLINE_NAME_LIMIT} more"
-    lead = ("1 token your cards make isn't in this deck, so it shows" if count == 1
-            else f"{count} tokens your cards make aren't in this deck, so they show")
-    return f"{lead} without a picture in Proxic Arena: {listed}"
 
 
 def arena_token_rows(check):
@@ -217,8 +200,7 @@ def arena_token_rows(check):
     warning and never stops a send (ARN-010); the token is returned with its
     row so the window can offer to find it.
     """
-    rows = [(OK, arena_token_label(token), ARENA_TOKEN_HELD, None)
-            for token in check.held_tokens]
+    rows = [(OK, arena_token_label(token), "", None) for token in check.held_tokens]
     rows.extend(
         (WARN, arena_token_label(token), ARENA_TOKEN_MISSING, token)
         for token in check.missing_tokens)
@@ -226,7 +208,7 @@ def arena_token_rows(check):
     for card, quantity in check.parts.tokens:
         name = str(card.get("name") or "")
         if name.split(" // ", 1)[0].strip().casefold() not in made:
-            rows.append((OK, f"{quantity} {name}", "A token picture in your deck.", None))
+            rows.append((OK, f"{quantity} {name}", "", None))
     return rows
 
 
@@ -256,15 +238,18 @@ def arena_name_status(name, names, linked):
         return BAD, "Give the deck a name to send it.", ""
     if names is None:
         if not linked:
-            return INFO, "Checked against your Deck Depot once this computer is linked.", ""
-        return INFO, "Your Deck Depot couldn't be read just now; Arena checks the name when you send.", ""
+            return (INFO, "Once this computer is linked, this checks whether your Deck "
+                    "Depot already has a deck with this name.", "")
+        return (INFO, "Your Deck Depot couldn't be checked just now. Press Check again, "
+                "or send anyway: Arena checks the name too.", "")
     if _name_key(name) in {_name_key(other) for other in names}:
         return (WARN,
-                f"Your Deck Depot already has a deck named {name}. This one goes in "
-                f"as a new deck, so give it a name of its own. Your other {name} "
+                f"Your Deck Depot already has a deck named {name}. Sending this one "
+                f"makes a second deck, so give it a different name. Your other {name} "
                 "stays as it is.",
                 next_free_name(name, names))
-    return OK, "Free in your Deck Depot.", ""
+    return (OK, f"Checked your Deck Depot: you don't have a deck named {name} yet, "
+            "so this name is free.", "")
 
 
 def arena_rules_note(obtained, checked_at=None):
@@ -377,6 +362,7 @@ class ArenaExportWindow:
         self.cancel_event = None
         self.progress = None
         self.name_edited = False
+        self.refreshing = False
         self.after_handles = {}
         self._build()
 
@@ -396,8 +382,6 @@ class ArenaExportWindow:
         head = tk.Frame(shell, bg=p["surface"])
         head.pack(fill="x", pady=(0, 8))
         ttk.Label(head, text=ARENA_WINDOW_HEADING, style="DialogTitle.TLabel").pack(side="left")
-        self.deck_label = tk.Label(head, text="", bg=p["surface"], fg=p["muted"], font=FONT_BODY)
-        self.deck_label.pack(side="left", padx=(8, 0), pady=(4, 0))
 
         self.footer = tk.Frame(shell, bg=p["surface"])
         self.footer.pack(side="bottom", fill="x", pady=(10, 0))
@@ -480,7 +464,6 @@ class ArenaExportWindow:
         previous = self.signature
         self.signature = signature
         name = deck.name if deck is not None else ""
-        self.deck_label.configure(text=f"· {name}" if name else "")
         switched = previous is None or previous[0] != (signature or (None,))[0]
         if initial or switched or not self.name_edited:
             self.name_var.set(name)
@@ -522,7 +505,16 @@ class ArenaExportWindow:
             return
         done(outcome)
 
+    def _check_again(self):
+        """Ask Arena again: its deck rules, and the names in the Deck Depot."""
+        if self.refreshing or self.phase == "sending":
+            return
+        self._refresh_rules()
+        self._render_name_status()
+        self._render_footer()
+
     def _refresh_rules(self):
+        self.refreshing = True
         store = self.store
         built_in = _asset_path(ARENA_DECK_RULES_FILE)
 
@@ -542,9 +534,10 @@ class ArenaExportWindow:
             return obtained, rules_from_document(obtained.payload), link, names, unlinked
 
         def done(outcome):
+            self.refreshing = False
             if isinstance(outcome, Exception):
-                self.banner = (BAD, "Proxic Arena's deck rules couldn't be read. Close this "
-                               "window and try again.")
+                self.banner = (BAD, "Proxic Arena's deck rules couldn't be read. Press "
+                               "Check again, or close this window and try again.")
                 self._render()
                 return
             self.obtained, self.rules, self.link, self.names, unlinked = outcome
@@ -821,6 +814,12 @@ class ArenaExportWindow:
         if suggestion:
             AppButton(line, text=f"Use “{suggestion}”", role="compact",
                       command=lambda: self._use_name(suggestion)).pack(side="left", padx=(8, 0))
+        if self.link is not None:
+            again = AppButton(line, text="Check again", role="compact", command=self._check_again)
+            again.pack(side="left", padx=(8, 0))
+            if self.refreshing:
+                again.state(["disabled"])
+                kind, sentence = INFO, "Checking your Deck Depot…"
         status = tk.Frame(self.name_frame, bg=p["surface"])
         status.pack(fill="x", pady=(5, 0))
         _mark(status, kind, p["surface"]).pack(side="left", anchor="n", pady=(1, 0))
@@ -885,6 +884,9 @@ class ArenaExportWindow:
         else:
             hint = arena_footer_hint(
                 self.check, self.link is not None, getattr(self, "name_kind", OK), False)
+            if self.refreshing and not hint:
+                # Send waits for Check again, so it never goes on an old answer.
+                hint = "Checking your Deck Depot…"
             send = AppButton(row, text="Send to Arena", role="compact_primary",
                              command=self._send)
             send.pack(side="right", padx=(0, 8))

@@ -3,11 +3,8 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from mtgdb.deck.arena_tokens import (
-    counted_cards, is_game_piece, token_card_count, token_status)
 from mtgdb.deck.model import Deck
 from mtgdb.deck.sessions import DeckSession
-from mtgdb.ui.arena_export import missing_token_hint
 from mtgdb.ui.components import (
     AppButton, AppEntry, ClassicButton, card_count_text, deck_board_label,
     format_display_name)
@@ -17,12 +14,6 @@ from mtgdb.ui.tables import TABLE_COLUMNS, TABLE_COLUMN_ORDER
 from mtgdb.ui.tokens import (
     FONT_CONTROL_GLYPH, FONT_HELPER, FONT_HELPER_BOLD, PALETTE,
 )
-
-
-def _cards_before_tokens(entries):
-    """Keep the sort, but list token, emblem and art cards after the cards (ARN-016)."""
-    return ([e for e in entries if not is_game_piece(e["card"])]
-            + [e for e in entries if is_game_piece(e["card"])])
 
 
 class _BoardsPaned(tk.PanedWindow):
@@ -322,22 +313,6 @@ class DeckEditorMixin:
         ).pack(side="right", padx=(0, 6))
         self.side_tv = self._make_deck_tree(side_frame, "side", height=4)
 
-        # ARN-010 -- the tokens the deck's cards make that it holds no token
-        # card of, so Proxic Arena would show them without a picture. Shown
-        # only when there are some.
-        hint = tk.Frame(parent, bg=PALETTE["surface"])
-        self._token_hint_frame = hint
-        self._token_hint_label = tk.Label(
-            hint, text="", bg=PALETTE["surface"], fg=PALETTE["muted"],
-            font=FONT_HELPER, justify="left", anchor="w")
-        self._token_hint_label.pack(fill="x", anchor="w")
-        self._token_hint_button = AppButton(
-            hint, text="Find these tokens in Search", role="compact",
-            command=self._find_missing_tokens)
-        self._token_hint_button.pack(anchor="w", pady=(4, 0))
-        self._bind_debounced_wrap(self._token_hint_label)
-        self._missing_tokens = ()
-
         ctrl = ttk.Frame(parent)
         ctrl.pack(fill="x", pady=(8, 0))
         self._deck_action_frame = ctrl
@@ -394,46 +369,15 @@ class DeckEditorMixin:
             frame.columnconfigure(0, weight=1)
 
     def _update_board_headers(self):
-        """Keep board totals beside their section names without a duplicate count row.
-
-        Token cards are counted apart from the cards (ARN-016): a token is not
-        one of a deck's cards, and a 60-card deck with an Ape token is still
-        60 cards.
-        """
+        """Keep board totals beside their section names without a duplicate count row."""
         main = getattr(self, "mainboard_header_lbl", None)
         side = getattr(self, "sideboard_header_lbl", None)
         if main is not None:
-            text = f"MAINBOARD | {card_count_text(counted_cards(self.deck, 'main'))}"
-            tokens = token_card_count(self.deck)
-            if tokens:
-                text += f" · {tokens} {'token' if tokens == 1 else 'tokens'}"
-            main.configure(text=text)
+            main.configure(
+                text=f"MAINBOARD | {card_count_text(self.deck.total('main'))}")
         if side is not None:
             side.configure(
-                text=f"SIDEBOARD | {card_count_text(counted_cards(self.deck, 'side'))}")
-        self._update_token_hint()
-
-    def _update_token_hint(self):
-        """Show, under the deck, the tokens its cards make that it has no picture for."""
-        frame = getattr(self, "_token_hint_frame", None)
-        if frame is None:
-            return
-        _held, missing = token_status(self.deck)
-        self._missing_tokens = missing
-        text = missing_token_hint(missing)
-        try:
-            if not text:
-                frame.pack_forget()
-                return
-            self._token_hint_label.configure(text=text)
-            if not frame.winfo_ismapped():
-                frame.pack(fill="x", pady=(8, 0), before=self._deck_action_frame)
-        except tk.TclError:
-            pass
-
-    def _find_missing_tokens(self):
-        self._search_for_token_names(
-            [token.name for token in getattr(self, "_missing_tokens", ())])
+                text=f"SIDEBOARD | {card_count_text(self.deck.total('side'))}")
 
     def _make_deck_tree(self, parent, view, height=8):
         ordinary = tuple(c for c in TABLE_COLUMN_ORDER
@@ -985,11 +929,11 @@ class DeckEditorMixin:
                 key=lambda e, c=sort_col: self._table_sort_key(
                     e["card"], c, qty=e["qty"]),
                 reverse=sort_desc)
-        entries = _cards_before_tokens([
+        entries = [
             e for e in entries
             if self._row_passes_table_filters(
                 view, e["card"], qty=e["qty"])
-        ])
+        ]
 
         wanted_ids = {e["card"]["id"] for e in entries}
         existing = set(tv.get_children())
@@ -1068,11 +1012,11 @@ class DeckEditorMixin:
                     reverse=sort_desc,
                 )
 
-            entries = _cards_before_tokens([
+            entries = [
                 e for e in entries
                 if self._row_passes_table_filters(
                     view, e["card"], qty=e["qty"])
-            ])
+            ]
 
             self._update_table_headings(view, tv)
 

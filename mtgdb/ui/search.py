@@ -2425,9 +2425,9 @@ class SearchFeatureMixin:
     def _search_for_token_names(self, names):
         """Search for token cards by name, with the Search Scope set to Tokens.
 
-        The Proxic Arena Export window and the deck panel offer this for a
-        token the deck's cards make that the deck holds no token card of
-        (ARN-010), so the player can add one for its picture.
+        The export window's Find token offers this for a token the deck's
+        cards make that the deck holds no token card of (ARN-010), so the
+        player can add one for its picture.
         """
         names = [str(name) for name in (names or ()) if str(name or "").strip()]
         if not names:

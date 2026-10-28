@@ -23,7 +23,7 @@ from mtgdb.arena.export import (
 from mtgdb.core.background_jobs import JobCancelled
 from mtgdb.deck.arena_check import check_for_arena
 from mtgdb.deck.arena_support import rules_from_document
-from mtgdb.deck.arena_tokens import ArenaToken, split_for_arena
+from mtgdb.deck.arena_tokens import split_for_arena
 from mtgdb.deck.io import deck_to_text
 from mtgdb.deck.model import Deck
 from mtgdb.printing.service import back_faces
@@ -583,6 +583,14 @@ def _rows_check():
     unplayable.add(_card("my", "Mystery Card", number="9"), "main", 1)
     unplayable_check = check_for_arena(unplayable, rules, lambda _name: [])
 
+    # Two token cards ride along for their pictures: still 60 cards.
+    with_tokens = Deck("With Tokens", "modern")
+    with_tokens.add(forest, "main", 56)
+    with_tokens.add(bolt, "main", 4)
+    with_tokens.add(_card("gob", "Goblin", type_line="Token Creature — Goblin",
+                          content_kind="token"), "main", 2)
+    tokens_check = check_for_arena(with_tokens, rules, lambda _name: [])
+
     swapped = Deck("Swapped", "modern")
     swapped.add(forest, "main", 56)
     swapped.add(_card("bz", "Lightning Bolt", "zzz", number="9"), "main", 4)
@@ -607,6 +615,9 @@ def _rows_check():
             (INFO, "Sideboard stays here",
              "Arena decks have no sideboard, so its 3 cards aren't sent."),
             (INFO, "Left out: Elspeth Emblem", "Emblems and art cards aren't part of a deck.")]
+        and arena_check_rows(tokens_check)[0] == (
+            OK, "60 cards", "Arena plays decks of 60 to 65 cards.")
+        and not tokens_check.blocked
         and unplayable_check.blocked
         and arena_check_rows(unplayable_check)[0][0] == OK
         and (BAD, "Mystery Card doesn't play in Proxic Arena yet",
@@ -630,24 +641,26 @@ def _name_check():
     return (
         arena_name_status("", names, True) == (BAD, "Give the deck a name to send it.", "")
         and arena_name_status("Ape Tribal", None, False)[:2] == (
-            INFO, "Checked against your Deck Depot once this computer is linked.")
+            INFO, "Once this computer is linked, this checks whether your Deck Depot "
+            "already has a deck with this name.")
         and arena_name_status("Ape Tribal", None, True)[0] == INFO
+        and "Check again" in arena_name_status("Ape Tribal", None, True)[1]
         and taken_kind == WARN and suggestion == "ape TRIBAL 3"
         and taken_text.startswith("Your Deck Depot already has a deck named ape TRIBAL.")
+        and "makes a second deck" in taken_text
         and "stays as it is" in taken_text
-        and arena_name_status("Gruul", names, True) == (OK, "Free in your Deck Depot.", "")
+        and arena_name_status("Gruul", names, True) == (
+            OK, "Checked your Deck Depot: you don't have a deck named Gruul yet, so this "
+            "name is free.", "")
         and next_free_name("Burn", names) == "Burn 2")
 
 
 def _token_words_check():
-    """ARN-010, ARN-016: tokens in plain words, a warning and never a refusal."""
+    """ARN-010: tokens in plain words, a warning and never a refusal."""
     from mtgdb.ui.arena_export import (
-        ARENA_TOKEN_HELD, ARENA_TOKEN_MISSING, OK, WARN, arena_token_rows,
-        missing_token_hint,
+        ARENA_TOKEN_MISSING, OK, WARN, arena_token_rows,
     )
 
-    goblin = ArenaToken("Goblin", "Token Creature — Goblin", ("Krenko, Mob Boss",))
-    treasure = ArenaToken("Treasure", "Token Artifact — Treasure", ("Smothering Tithe",))
     pongify = _card("po", "Pongify")
     pongify["related_parts"] = json.dumps([
         {"component": "token", "name": "Ape", "type_line": "Token Creature — Ape"}])
@@ -661,19 +674,12 @@ def _token_words_check():
     deck.add(_card("cl", "Clue", content_kind="token"), "main", 2)
     rows = arena_token_rows(check_for_arena(deck, rules_from_document(_RULES_DOCUMENT), lambda _n: []))
     return (
-        missing_token_hint(()) == ""
-        and missing_token_hint((goblin,)) == (
-            "1 token your cards make isn't in this deck, so it shows without a "
-            "picture in Proxic Arena: Goblin (Krenko, Mob Boss)")
-        and missing_token_hint((goblin, treasure)) == (
-            "2 tokens your cards make aren't in this deck, so they show without a "
-            "picture in Proxic Arena: Goblin (Krenko, Mob Boss) · Treasure "
-            "(Smothering Tithe)")
-        and [row[:3] for row in rows] == [
-            (OK, "Ape (Token Creature — Ape), from Pongify", ARENA_TOKEN_HELD),
+        [row[:3] for row in rows] == [
+            # A token the deck has a picture for needs no explaining.
+            (OK, "Ape (Token Creature — Ape), from Pongify", ""),
             (WARN, "Goblin (Token Creature — Goblin), from Krenko, Mob Boss",
              ARENA_TOKEN_MISSING),
-            (OK, "2 Clue", "A token picture in your deck.")]
+            (OK, "2 Clue", "")]
         # The missing token rides with its row, for Find token.
         and rows[1][3] is not None and rows[1][3].name == "Goblin"
         and rows[0][3] is None)
@@ -747,23 +753,53 @@ def _window_contract_check():
         and "filedialog" not in source and "asksaveasfilename" not in source
         and "zipfile" not in source and "messagebox." not in source
         and 'style="DialogTitle.TLabel"' in source and "ScrollZone(" in source
+        # The heading is the window's name alone; the deck's name is in its field.
+        and "deck_label" not in source
+        # Check again asks Arena afresh for the rules and the Deck Depot's names.
+        and 'text="Check again"' in source and "def _check_again" in source
+        # Send waits for Check again, so it never goes on an old answer.
+        and "if self.refreshing and not hint:" in source
         and "PALETTE" in source
         # Save Deck As says nothing about Arena.
         and "_export_arena" not in deck_files and "arena_support" not in deck_files
         and "ArenaExportMixin" in app)
 
 
-def _deck_panel_check():
-    """ARN-016, ARN-010: token cards counted apart, listed after, and the missing named."""
+def _only_the_window_names_arena_check():
+    """ARN-016: Proxic Arena is named to a player only by the export window and its button.
+
+    Every string a UI module could show is read from its syntax tree
+    (docstrings left out, comments are not in the tree); outside the
+    window's two modules the only one naming Proxic Arena is the menu bar
+    button. Wizards' MTG Arena (the Paper / Arena / MTGO printing filter) is
+    a different game and is not matched.
+    """
+    window = {"arena_export.py", "arena_connection.py"}
+    found = []
+    for path in sorted((ROOT / "mtgdb/ui").glob("*.py")):
+        if path.name in window:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.body[0].value) for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef))
+            and node.body and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and id(node) not in docstrings and "Proxic Arena" in node.value):
+                found.append((path.name, node.value))
     deck = (ROOT / "mtgdb/ui/deck.py").read_text(encoding="utf-8")
     search = (ROOT / "mtgdb/ui/search.py").read_text(encoding="utf-8")
     finder = search.split("def _search_for_token_names")[1].split("\n    def ")[0]
     return (
-        "card_count_text(counted_cards(self.deck, 'main'))" in deck
-        and "token_card_count(self.deck)" in deck
-        and deck.count("entries = _cards_before_tokens([") == 2
-        and "missing_token_hint(missing)" in deck
-        and 'text="Find these tokens in Search"' in deck
+        found == [("app.py", "Proxic Arena Export")]
+        # The deck panel counts and sorts every card as it always has.
+        and "arena" not in deck.lower()
+        and "card_count_text(self.deck.total('main'))" in deck
+        and "_cards_before_tokens" not in deck
+        # Find token is the window's; it searches Tokens by name.
         and 'self._selected_traits = {"content_tokens"}' in finder
         and "self._set_exact_name_batch(names)" in finder)
 
@@ -788,7 +824,8 @@ def main():
         "tokens are named in plain words, a warning and never a refusal": _token_words_check(),
         "the window says what reached the Deck Depot and why Send is off": _send_words_check(),
         "one window, off Tk, cancellable, saving no file": _window_contract_check(),
-        "the deck panel counts token cards apart and names the missing": _deck_panel_check(),
+        "only the export window and its button name Proxic Arena to a player":
+            _only_the_window_names_arena_check(),
     }
     ok = True
     for label, passed in checks.items():

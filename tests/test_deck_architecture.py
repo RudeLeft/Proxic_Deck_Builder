@@ -35,7 +35,7 @@ from mtgdb.deck.arena_support import (
 )
 from mtgdb.deck.arena_limits import arena_deck_limits
 from mtgdb.deck.arena_tokens import (
-    counted_cards, deck_tokens, split_for_arena, token_card_count, token_status,
+    deck_tokens, split_for_arena, token_status,
 )
 
 
@@ -559,7 +559,7 @@ def _no_engine_knowledge_check():
 
 
 def _arena_token_parts_check():
-    """ARN-013, ARN-010, ARN-016: token cards travel as pictures, counted apart.
+    """ARN-013, ARN-010: token cards travel as pictures, counted apart from the cards.
 
     Expectations are written out rather than derived from the functions under
     test (VER-010).
@@ -602,10 +602,6 @@ def _arena_token_parts_check():
         and [token.name for token in held] == ["Ape"]
         and [token.name for token in missing] == ["Goblin"]
         and missing[0].makers == ("Krenko, Mob Boss",)
-        # The headings' counts leave game pieces out.
-        and counted_cards(deck, "main") == 60
-        and counted_cards(deck, "side") == 3
-        and token_card_count(deck) == 3
         # The Tokens section follows the deck, after a blank line.
         and lines[-2:] == ["// Tokens", "3 Ape [TST:1]"]
         and lines[-3] == ""
