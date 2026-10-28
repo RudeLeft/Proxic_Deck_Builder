@@ -6,6 +6,7 @@ Composed into DeckBuilderApp as a mixin. Presentation/window behavior only.
 
 import logging
 import sys
+import time
 import tkinter as tk
 
 from mtgdb.ui.assets import APP_ICON_FILE, HAVE_PIL, Image, ImageTk, _asset_path
@@ -13,9 +14,89 @@ from mtgdb.ui.tokens import FONT_HELPER, PALETTE
 
 log = logging.getLogger("mtg")
 
+# WIN-012. Tk paints between Python callbacks, and every callback needs the
+# interpreter lock that the startup workers (trusted filters, facet index,
+# workspace restore) hold while they compute. A waiting thread asks for the lock
+# after the switch interval, and Windows rounds that wait UP to its ~15 ms timer
+# tick for any interval of 1 ms or more -- so with the 5 ms default the window
+# drew in pieces for ~5 s at startup. Below 1 ms the wait rounds to zero and the
+# Tk thread gets the lock at the workers' next check; they finish no later.
+UI_THREAD_SWITCH_INTERVAL_S = 0.0005
+# The main window is mapped transparent and shown in one step once its startup
+# layout has settled and painted; never later than this, whatever is still busy.
+STARTUP_REVEAL_CAP_MS = 2500
+STARTUP_REVEAL_POLL_MS = 40
+# A layout flush quicker than this found nothing left to lay out or draw.
+STARTUP_SETTLED_FLUSH_S = 0.05
+
+
+def prefer_ui_thread():
+    """Let the Tk thread take the interpreter lock promptly from busy workers."""
+    sys.setswitchinterval(UI_THREAD_SWITCH_INTERVAL_S)
+
 
 class WindowServicesMixin:
     """Popup geometry, dark title bars, scrolling, icons, DPI, window behavior."""
+
+    def _hide_root_until_composed(self):
+        """Make the root transparent; ``_reveal_when_composed`` shows it whole.
+
+        Called before the root is maximized: on Windows ``zoomed`` maps even a
+        withdrawn window, which flashed one white full-screen frame. A maximized
+        root then lays out and paints over several event-loop passes (the zoom,
+        the restored decks, the Type Line chips), which showed as half-drawn
+        filters and boards.
+        """
+        self._reveal_cap_after = None
+        self._reveal_poll_after = None
+        try:
+            self._reveal_alpha = float(self.attributes("-alpha"))
+            self.attributes("-alpha", 0.0)
+        except (tk.TclError, ValueError):
+            self._reveal_alpha = None
+            return
+        self._reveal_cap_after = self.after(
+            STARTUP_REVEAL_CAP_MS, self._reveal_composed_root)
+
+    def _reveal_when_composed(self):
+        """Show the root once its layout is quiet and a flush finds nothing to do."""
+        self._reveal_poll_after = None
+        if getattr(self, "_reveal_alpha", None) is None:
+            return
+        stats = getattr(self, "_layout_motion_stats", None) or {}
+        quiet = (not self._window_in_motion and stats.get("settles")
+                 and getattr(self, "_layout_motion_after", None) is None)
+        if quiet:
+            started = time.perf_counter()
+            try:
+                # Still transparent: a geometry and redraw pass is not a visible
+                # flush (WIN-007 permits it before the window is seen).
+                self.update_idletasks()
+            except tk.TclError:
+                return
+            # A slow pass laid something out, which can schedule more layout.
+            if time.perf_counter() - started < STARTUP_SETTLED_FLUSH_S:
+                self._reveal_composed_root()
+                return
+        try:
+            self._reveal_poll_after = self.after(
+                STARTUP_REVEAL_POLL_MS, self._reveal_when_composed)
+        except tk.TclError:
+            pass
+
+    def _reveal_composed_root(self):
+        alpha = getattr(self, "_reveal_alpha", None)
+        if alpha is None:
+            return
+        self._reveal_alpha = None
+        pending = getattr(self, "_reveal_cap_after", None)
+        self._reveal_cap_after = None
+        try:
+            if pending is not None:
+                self.after_cancel(pending)
+            self.attributes("-alpha", alpha)
+        except tk.TclError:
+            pass
 
     def _maximize_window(self):
         """Open maximized while retaining the normal native Windows frame."""

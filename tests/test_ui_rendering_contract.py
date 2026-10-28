@@ -498,6 +498,80 @@ def _scroll_zone_settle_checks(results):
         root.destroy()
 
 
+def _startup_reveal_checks(results, sources):
+    """WIN-012: the main window appears once, laid out, and Tk is not starved."""
+    import mtgdb.ui.window as W
+
+    init = _method_source(sources["app.py"], "__init__")
+    results["Tk takes the interpreter lock promptly from busy workers (WIN-012)"] = (
+        W.UI_THREAD_SWITCH_INTERVAL_S < 0.001
+        and init.index("prefer_ui_thread()") < init.index("SearchRepository(")
+        and init.index("prefer_ui_thread()")
+        < init.index("_start_post_paint_initialization"))
+    results["the main window is transparent before it is maximized (WIN-012)"] = (
+        init.index("self._hide_root_until_composed()")
+        < init.index("self._maximize_window()")
+        < init.index("self.deiconify()")
+        and '"_reveal_when_composed"' in _method_source(
+            sources["workspace.py"], "_finish_workspace_initialization"))
+
+    class Root(W.WindowServicesMixin, tk.Tk):
+        pass
+
+    def make():
+        root = Root()
+        root.withdraw()
+        root._initialize_layout_motion()
+        root._window_in_motion = False
+        return root
+
+    def alpha(root):
+        return float(root.attributes("-alpha"))
+
+    try:
+        root = make()
+    except tk.TclError:
+        return
+    try:
+        root._hide_root_until_composed()
+        hidden = alpha(root) == 0.0 and root._reveal_alpha == 1.0
+        # Still resizing, then never settled, then a settle still pending.
+        root._window_in_motion = True
+        root._reveal_when_composed()
+        while_moving = alpha(root)
+        root._window_in_motion = False
+        root._reveal_when_composed()
+        before_settle = alpha(root)
+        root._layout_motion_stats["settles"] = 1
+        root._layout_motion_after = root.after(10_000, lambda: None)
+        root._reveal_when_composed()
+        settle_pending = alpha(root)
+        root.after_cancel(root._layout_motion_after)
+        root._layout_motion_after = None
+        root._reveal_when_composed()
+        results["the main window is revealed only once its layout is quiet (WIN-012)"] = (
+            hidden and while_moving == before_settle == settle_pending == 0.0
+            and alpha(root) == 1.0 and root._reveal_cap_after is None)
+    finally:
+        root.destroy()
+
+    cap = W.STARTUP_REVEAL_CAP_MS
+    W.STARTUP_REVEAL_CAP_MS = 30
+    root = make()
+    try:
+        root._hide_root_until_composed()
+        root._window_in_motion = True
+        end = time.perf_counter() + 0.4
+        while time.perf_counter() < end:
+            root.update()
+            time.sleep(0.01)
+        results["a busy startup still reveals the main window at the cap (WIN-012)"] = (
+            alpha(root) == 1.0)
+    finally:
+        W.STARTUP_REVEAL_CAP_MS = cap
+        root.destroy()
+
+
 def main():
     sources = _ui_sources()
     trees = {name: ast.parse(text) for name, text in sources.items()}
@@ -673,6 +747,7 @@ def main():
     _typography_checks(results)
     _scroll_zone_checks(results, sources)
     _scroll_zone_settle_checks(results)
+    _startup_reveal_checks(results, sources)
 
     ok = True
     for label, passed in results.items():

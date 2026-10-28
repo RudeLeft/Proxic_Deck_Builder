@@ -48,7 +48,7 @@ from mtgdb.ui.tokens import (
     MAIN_CARD_PREVIEW_HEIGHT, MAIN_CENTER_COLUMN_WIDTH, MAIN_DECK_WEIGHT,
     MAIN_SEARCH_WEIGHT, MAIN_SIDE_MIN_WIDTH, PANEL_PADDING, WINDOW_GUTTER,
 )
-from mtgdb.ui.window import WindowServicesMixin
+from mtgdb.ui.window import WindowServicesMixin, prefer_ui_thread
 from mtgdb.ui.workspace import WorkspaceMixin
 
 log = logging.getLogger("mtg")
@@ -63,6 +63,8 @@ class DeckBuilderApp(
         UpdateCheckMixin, WindowServicesMixin, tk.Tk):
     def __init__(self, db, image_cache_dir, data_dir, log_path=None):
         super().__init__()
+        # Before any background worker starts, so none can starve Tk's painting.
+        prefer_ui_thread()
         # Construct the complete styled root while hidden so Windows never shows
         # Tk's default light client area as an intermediate startup frame.
         self.withdraw()
@@ -156,13 +158,15 @@ class DeckBuilderApp(
         self._build_body()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self._refresh_deck_views()
+        # Transparent from here on: the first frame anyone sees is the settled
+        # layout, once the workspace restore has landed (WIN-012).
+        self._hide_root_until_composed()
         # Establish the final root geometry while the native window is still
         # hidden.  A visible 1380x860 frame followed by one or more delayed
         # maximize calls is particularly noticeable on Windows and defeats the
         # hidden-first/no-flash startup contract.
         self._maximize_window()
         self._set_dark_titlebar()
-        # First visible root frame is already fully styled and populated.
         self.deiconify()
         # Some Windows window managers only honour ``zoomed`` after mapping;
         # one idle retry is enough. Re-apply the DWM frame colors after mapping
@@ -570,7 +574,8 @@ class DeckBuilderApp(
                 "_curve_resize_after", "_image_load_after",
                 "_image_poll_after", "_image_ready_after",
                 "_pane_clamp_after", "_workspace_load_after",
-                "_context_debounce_after"):
+                "_context_debounce_after", "_reveal_cap_after",
+                "_reveal_poll_after"):
             pending = getattr(self, attr, None)
             if pending is not None:
                 try:

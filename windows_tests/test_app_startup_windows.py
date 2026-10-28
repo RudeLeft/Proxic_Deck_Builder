@@ -384,7 +384,8 @@ def _measure_dialogs(app, style):
 
 def _run_scenario(width, height, scaling, label):
     original = {name: getattr(DeckBuilderApp, name) for name in (
-        "_setup_style", "_maximize_window", "_maybe_auto_sync")}
+        "_setup_style", "_maximize_window", "_maybe_auto_sync",
+        "_reveal_composed_root")}
 
     def scaled_setup(self):
         self.tk.call("tk", "scaling", scaling)
@@ -399,6 +400,8 @@ def _run_scenario(width, height, scaling, label):
     DeckBuilderApp._maximize_window = invisible_fixed_size
     # No network: an empty library would otherwise start the first-run download.
     DeckBuilderApp._maybe_auto_sync = lambda self: None
+    # Stays invisible: the startup reveal would restore full opacity (WIN-012).
+    DeckBuilderApp._reveal_composed_root = lambda self: None
     with tempfile.TemporaryDirectory(prefix="mtg-layout-fit-") as tmp:
         data_dir = Path(tmp) / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -492,8 +495,178 @@ def _layout_fit():
     return status
 
 
+def _tk_turns_under_load():
+    """WIN-012: Tk gets the interpreter lock promptly from a busy worker.
+
+    Windows rounds the lock wait up to its ~15 ms timer tick at a switch
+    interval of 1 ms or more (5 ms is Python's default), so each Tk callback
+    waited a tick behind the startup workers and the window drew in pieces.
+    Fifty chained callbacks beside a busy thread took ~0.8 s that way.
+    """
+    import threading
+
+    from mtgdb.ui.window import prefer_ui_thread
+
+    interval = sys.getswitchinterval()
+    prefer_ui_thread()
+    root = tk.Tk()
+    root.withdraw()
+    busy = threading.Event()
+    stop = threading.Event()
+
+    def worker():
+        busy.set()
+        total = 0
+        while not stop.is_set():
+            total += sum(range(200))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    try:
+        thread.start()
+        busy.wait(5)
+        turns = []
+
+        def turn():
+            turns.append(time.perf_counter())
+            if len(turns) < 50:
+                root.after(0, turn)
+            else:
+                root.quit()
+
+        started = time.perf_counter()
+        root.after(0, turn)
+        root.after(10_000, root.quit)
+        root.mainloop()
+        took = time.perf_counter() - started
+    finally:
+        stop.set()
+        thread.join(5)
+        root.destroy()
+        sys.setswitchinterval(interval)
+    if len(turns) < 50 or took > 0.25:
+        print(f"  [FAIL] Tk gets its turns beside a busy worker (WIN-012): "
+              f"{len(turns)} turns took {took * 1000:.0f} ms")
+        return 1
+    print(f"  [PASS] Tk gets its turns beside a busy worker (WIN-012): "
+          f"50 turns in {took * 1000:.0f} ms")
+    return 0
+
+
+def _startup_reveal():
+    """WIN-012 on the real library: one reveal, after the decks are restored.
+
+    A first launch saves a workspace holding a 60-card deck; the second launch,
+    measured, must restore it and show the window exactly once, after that
+    restore and within the cap, while the trusted filters load beside it.
+    """
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print("SKIP: startup reveal is a local build gate (BLD-004).")
+        return 0
+    library = ROOT / "mtgdb" / "data" / "cards.db"
+    if not library.exists():
+        print("SKIP: startup reveal needs a downloaded card library.")
+        return 0
+    import sqlite3
+    import threading
+
+    from mtgdb.ui.window import STARTUP_REVEAL_CAP_MS
+
+    original = {name: getattr(DeckBuilderApp, name) for name in (
+        "_maybe_auto_sync", "_start_update_check", "_reveal_composed_root")}
+    revealed = []
+
+    def record_reveal(self):
+        if getattr(self, "_reveal_alpha", None) is not None:
+            revealed.append((time.perf_counter(), self._workspace_loaded,
+                             self.deck.total("main")))
+        # Stays transparent: this is a measurement, not a demo.
+        original["_reveal_composed_root"](self)
+        self.attributes("-alpha", 0.0)
+
+    def run(app, keep_going):
+        def check():
+            if keep_going():
+                app.after(20, check)
+            else:
+                app.quit()
+        app.after(0, check)
+        app.after(30_000, app.quit)
+        app.mainloop()
+
+    DeckBuilderApp._maybe_auto_sync = lambda self: None
+    DeckBuilderApp._start_update_check = lambda self: None
+    DeckBuilderApp._reveal_composed_root = record_reveal
+    with tempfile.TemporaryDirectory(
+            prefix="mtg-startup-reveal-", ignore_cleanup_errors=True) as tmp:
+        data_dir = Path(tmp) / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        # A copy: never open the live library with CardDB.
+        source = sqlite3.connect(f"file:{library}?mode=ro", uri=True)
+        target = sqlite3.connect(str(data_dir / "cards.db"))
+        source.backup(target)
+        source.close()
+        target.close()
+        db = CardDB(str(data_dir / "cards.db"))
+        app = None
+        try:
+            app = DeckBuilderApp(
+                db, str(data_dir / "card_images"), str(data_dir),
+                str(data_dir / "startup-reveal.log"))
+            run(app, lambda: not app._workspace_loaded)
+            ids = [row[0] for row in db.conn.execute(
+                "SELECT id FROM cards WHERE lang='en' AND paper=1 "
+                "AND type_line LIKE 'Creature%' GROUP BY name ORDER BY name LIMIT 30")]
+            for card_id in ids:
+                app.deck.add(db.get_card(card_id), "main", 2)
+            app._refresh_deck_views()
+            app._on_app_close()
+            app = None
+            # The first launch's workers finish before the measured launch.
+            deadline = time.perf_counter() + 30
+            while threading.active_count() > 1 and time.perf_counter() < deadline:
+                time.sleep(0.1)
+            revealed.clear()
+
+            started = time.perf_counter()
+            app = DeckBuilderApp(
+                db, str(data_dir / "card_images"), str(data_dir),
+                str(data_dir / "startup-reveal.log"))
+            # Until the trusted filters have landed (the first warm-up stage).
+            run(app, lambda: app._search_warmup_stage < 1)
+        finally:
+            for name, function in original.items():
+                setattr(DeckBuilderApp, name, function)
+            if app is not None:
+                try:
+                    app._on_app_close()
+                except Exception:
+                    pass
+            db.close()
+    failures = []
+    if len(revealed) != 1:
+        failures.append(f"the window was revealed {len(revealed)} times")
+    else:
+        when, restored, cards = revealed[0]
+        if not restored or cards != 60:
+            failures.append(
+                f"the window was revealed before the decks were restored "
+                f"({cards} of 60 cards)")
+        if when - started > 1.0 + STARTUP_REVEAL_CAP_MS / 1000:
+            failures.append("the window was revealed after the cap")
+    if failures:
+        print("  [FAIL] the main window appears once, with the decks restored (WIN-012)")
+        for failure in failures:
+            print(f"         - {failure}")
+        return 1
+    print(f"  [PASS] the main window appears once, with the decks restored (WIN-012): "
+          f"{revealed[0][0] - started:.2f} s after launch")
+    return 0
+
+
 def main():
     status = _startup_smoke()
+    status = _tk_turns_under_load() or status
+    status = _startup_reveal() or status
     status = _layout_fit() or status
     return status
 

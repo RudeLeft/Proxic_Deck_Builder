@@ -2057,6 +2057,17 @@ every feature together and is exempt.
   Legality's Close was 21 px tall at 125% and gone at 150%. The layout flush is
   permitted because the popup is still hidden. _Verification:_ **WINDOWS**.
 
+- **WIN-012 — MUST:** Show the main window in one step, already laid out: it
+  is made transparent before it is maximized (on Windows `zoomed` maps even a
+  withdrawn window, which flashed white), and revealed once the workspace
+  restore has landed, the root has stopped resizing and a layout flush finds
+  nothing left to do -- never later than `STARTUP_REVEAL_CAP_MS`. The process
+  MUST set a thread switch interval below 1 ms before any background worker
+  starts: Windows rounds the interpreter-lock wait up to its ~15 ms timer tick
+  at 1 ms or more, so the startup workers (trusted filters, facet index) left Tk
+  one paint slice per tick and the window drew in pieces for ~5 s (1.0.0 to
+  1.3.2). _Verification:_ **WINDOWS**.
+
 ## Color, typography, sizing
 
 - **CLR-001 — MUST:** Use `PALETTE` in `ui/tokens.py` as the only palette source.
@@ -2668,6 +2679,7 @@ the behavior it governs, update its test in the same change (CHG-007).
 | PORT-001 through PORT-005, PORT-007 | `tests/test_portability_contract.py`, `tests/test_hardening_regressions.py` |
 | PORT-006, single-instance | `windows_tests/test_single_instance_windows.py`, `tests/test_portability_contract.py` |
 | SIZ-003, SIZ-004, LAY-004, VER-006 simulated Tk scaling | `windows_tests/test_ui_geometry_windows.py`, `windows_tests/test_app_startup_windows.py` |
+| WIN-012 | `tests/test_ui_rendering_contract.py`, `windows_tests/test_app_startup_windows.py` |
 | WIN-011, LAY-011, real-application layout fit at 100/125/150% | `windows_tests/test_app_startup_windows.py`, `tests/test_ui_rendering_contract.py` |
 | BLD-*, REL-* | `tests/test_project_guardrails.py`, `tests/test_hardening_regressions.py` |
 | BLD-004 packaged smoke | `windows_tests/smoke_packaged_windows.py` |

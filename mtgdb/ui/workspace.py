@@ -145,6 +145,10 @@ class WorkspaceMixin:
     def _finish_workspace_initialization(self):
         self._workspace_loaded = True
         self._schedule_workspace_autosave()
+        # The decks and saved filters are in place: the main window may show.
+        reveal = getattr(self, "_reveal_when_composed", None)
+        if reveal is not None:
+            reveal()
         try:
             self.after_idle(self._restore_workspace_geometry)
         except tk.TclError:
