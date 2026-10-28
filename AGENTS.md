@@ -1277,7 +1277,8 @@ every feature together and is exempt.
   sending is off when it is, **Send to Arena** and **Close**; after a send, a
   banner saying what reached the Deck Depot and **Open Deck Depot**. The window
   is app-owned and dark, never a native `messagebox`: created hidden-first
-  (WIN-006), headed through the shared gold `DialogTitle.TLabel` (UI-014),
+  (WIN-006), headed "PROXIC ARENA EXPORT" alone (the deck's name is in its
+  name field, owner 2026-10-27) through the shared gold `DialogTitle.TLabel` (UI-014),
   coloured from `PALETTE` alone (CLR-001), its content in a `ScrollZone` so the
   footer stays on screen, with one compact secondary `Close` (UI-012). It is
   not modal, there is at most one, and it follows the deck the player is
@@ -1336,7 +1337,9 @@ every feature together and is exempt.
   cards able to make it, capped with the remainder counted. `deck/arena_tokens.py`
   finds and matches them; `ui/arena_export.py` words a row per token and offers
   **Find token**, which searches for token cards of that name with the Search
-  Scope set to Tokens. Only the window names them (ARN-016). A deck whose cards
+  Scope set to Tokens. A token the deck brings a picture for is named with no
+  further words (owner 2026-10-27: players don't need them); a missing one
+  says it shows without a picture. Only the window names them (ARN-016). A deck whose cards
   make no token and that holds no token card MUST NOT mention tokens. _Verification:_ **AUTO**.
 - **ARN-011 — MUST:** Send a printing Proxic Arena accepts for every main-deck
   card, because Arena checks the printing as well as the name and one mismatch
@@ -1399,7 +1402,12 @@ every feature together and is exempt.
   that name (compared as Arena compares names, case and surrounding spaces
   ignored) the window MUST say so before sending, MUST offer the next free
   `Name N`, and MUST keep **Send to Arena** off until the name is free: the deck
-  goes in as a new deck and the other stays as it is (owner decision S2). Arena
+  goes in as a new deck and the other stays as it is (owner decision S2). The
+  name's status MUST say in plain words that the Deck Depot was checked for that
+  name ("Checked your Deck Depot: you don't have a deck named Ape Tribal yet, so
+  this name is free"), and a linked window MUST offer **Check again**, which
+  asks Arena afresh for its deck rules and the Deck Depot's names; **Send to
+  Arena** stays off until that answer arrives (owner 2026-10-27). Arena
   stays the authority: a name it reports taken, the same package already held,
   a refusal with Arena's own reasons, a removed link and an unreachable server
   MUST each be told in plain words. Before packing, the send MUST ask Arena
