@@ -133,6 +133,55 @@ def _decklist_encoding_check():
         and not read_deck_text(doubled).startswith("\ufeff"))
 
 
+def _paren_printing_check():
+    """DECK-007: "Name (SET) 123" keeps the printing it names.
+
+    MTG Arena, Moxfield and Archidekt export this style. It used to resolve by
+    name alone, so a pasted Duel Decks: Elves vs. Goblins list came in as each
+    card's usual printing. A set the library lacks (MTG Arena writes some of its
+    own codes) falls back to the name, and a real name ending in "(Word)" still
+    finds its card.
+    """
+    from mtgdb.database.queries import _name_candidates
+
+    class SuffixResolver(Resolver):
+        # The real resolver also tries the name without a "(SET) 123" suffix.
+        def get_by_name(self, name, **options):
+            for candidate in _name_candidates(name):
+                card = super().get_by_name(candidate, **options)
+                if card is not None:
+                    return card
+            return None
+
+    cards = [
+        _card("mtn-usual", "Mountain", set_code="usu", collector="1"),
+        _card("mtn-59", "Mountain", set_code="dd1", collector="59"),
+        _card("mtn-61", "Mountain", set_code="dd1", collector="61"),
+        _card("sgc-usual", "Siege-Gang Commander", set_code="usu", collector="2"),
+        _card("sgc-dd1", "Siege-Gang Commander", set_code="dd1", collector="32"),
+        _card("bolt-usual", "Lightning Bolt", set_code="usu", collector="3"),
+        _card("bolt-2x2", "Lightning Bolt", set_code="2x2", collector="117"),
+        _card("hazmat", "Hazmat Suit (Used)", set_code="ust", collector="57"),
+    ]
+    deck, missing = deck_from_text(
+        "6 Mountain (DD1) 59\n5 Mountain (dd1) 61\n"
+        "1 Siege-Gang Commander (DD1) 32 *F*\n"
+        "1 Lightning Bolt (2X2) 999 *E*\n"
+        "1 Lightning Bolt (DAR) 254\n"
+        "1 Hazmat Suit (Used)\n",
+        SuffixResolver(cards), paper_only=False, lang=None)
+    held = {entry["card"]["id"]: entry["qty"] for entry in deck.entries("main")}
+    return missing == [] and held == {
+        # The printing named, each Mountain its own...
+        "mtn-59": 6, "mtn-61": 5, "sgc-dd1": 1,
+        # ...the set, when that number is not in it...
+        "bolt-2x2": 1,
+        # ...the name, when the library has no such set...
+        "bolt-usual": 1,
+        # ...and a name that ends in "(Word)".
+        "hazmat": 1}
+
+
 def _oversized_sideboard_deck():
     """A legal-sized Modern deck whose sideboard is one card too many."""
     deck = Deck("Sideboarded", "modern")
@@ -930,6 +979,8 @@ def main():
             and "Scryfall legality catalog" not in sources_by_name["mtgdb/ui/deck.py"]),
         "a decklist opens whatever encoding it arrived in":
             _decklist_encoding_check(),
+        "a (SET) 123 line keeps the printing it names":
+            _paren_printing_check(),
         "one format is named the same way on every surface":
             _format_naming_check(),
         "statistics classify a card by the face it is played from":

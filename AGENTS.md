@@ -1167,6 +1167,12 @@ every feature together and is exempt.
   _Verification:_ **AUTO**.
 - **DECK-007 — MUST:** Treat `[SET]`/`[SET:COLLECTOR]` TXT tags as authoritative,
   preserve saved name/format, and retain Mainboard/Sideboard/ignored sections. A
+  `Name (SET) COLLECTOR` line, with optional `*F*`/`*E*` markers (the style MTG
+  Arena, Moxfield and Archidekt export), MUST import that printing when the
+  library has it, else a printing from that set, else resolve the whole line as
+  an untagged name: MTG Arena writes some set codes of its own, and a few real
+  names end in `(Word)` ("Hazmat Suit (Used)"). Resolving such a line by name
+  alone imported each card's usual printing instead of the one asked for. A
   `// Name (value)` header only sets the deck format when `value` contains a
   letter; a purely numeric parenthesized value is a card count some other builders
   emit (`// Lands (37)`), not a format, and MUST NOT overwrite the deck format.

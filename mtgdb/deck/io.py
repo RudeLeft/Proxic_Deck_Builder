@@ -20,6 +20,13 @@ _LINE_RE = re.compile(r"^\s*(\d+)\s*[xX]?\s+(.+?)\s*$")
 _HEADER_RE = re.compile(r"^//\s*(.+?)\s*\(([^()]+)\)\s*$")
 _SET_TAG_RE = re.compile(
     r"^(.*?)\s+\[([A-Za-z0-9]{2,12})(?::([^\]]+))?\]\s*$")
+# "Name (SET) 123", with optional "*F*"/"*E*" finish markers: the line MTG Arena,
+# Moxfield and Archidekt export. A few real names end in "(Word)" ("Hazmat Suit
+# (Used)"), and MTG Arena writes some of its own set codes, so this printing is
+# preferred, not authoritative: see _resolve_paren_printing.
+_PAREN_SET_RE = re.compile(
+    r"^(.*?)\s+\(([A-Za-z0-9]{2,12})\)(?:\s+([^\s*()\[\]]+))?"
+    r"(?:\s*\*[A-Za-z]+\*)*\s*$")
 
 MAIN_HEADERS = frozenset({
     "deck", "main", "maindeck", "mainboard", "commander", "companion"})
@@ -125,13 +132,32 @@ def save_deck_text(path, deck):
         temporary.unlink(missing_ok=True)
 
 
+def _resolve_paren_printing(resolver, card_name, set_code, collector):
+    """The printing a ``(SET) NUM`` line names, else that set's, else ``None``."""
+    attempts = ([{collector}] if collector else []) + [None]
+    for numbers in attempts:
+        card = resolver.get_by_name(
+            card_name,
+            allowed_set_types=None,
+            allowed_set_codes={set_code},
+            allowed_collector_numbers=(
+                set(numbers) if numbers is not None else None),
+            paper_only=False,
+            lang=None)
+        if card is not None:
+            return card
+    return None
+
+
 def deck_from_text(text, resolver, name="Imported Deck", fmt="commander",
                    allowed_set_types=None, allowed_set_codes=None,
                    paper_only=True, lang=None, deck_class=None):
     """Parse a TXT decklist and return ``(deck, unresolved_names)``.
 
     A trailing ``[SET]`` or ``[SET:COLLECTOR]`` tag is authoritative and
-    bypasses optional resolver restrictions. Untagged cards honor any explicit
+    bypasses optional resolver restrictions. A trailing ``(SET) COLLECTOR``
+    (MTG Arena, Moxfield, Archidekt) picks that printing, or that set, when the
+    library has it, and otherwise resolves the line as an untagged name. Untagged cards honor any explicit
     scope arguments supplied by the caller; the interactive Open Deck workflow
     deliberately supplies no such restrictions and resolves against the complete
     local card database. Mainboard, sideboard, and ignored section semantics
@@ -218,6 +244,14 @@ def deck_from_text(text, resolver, name="Imported Deck", fmt="commander",
             card_name = card_spec
             explicit_set = None
             explicit_collector = None
+            paren_match = _PAREN_SET_RE.match(card_spec)
+            card = (_resolve_paren_printing(
+                resolver, paren_match.group(1).strip(),
+                paren_match.group(2).lower(), paren_match.group(3))
+                    if resolver and paren_match else None)
+        if card is None and not set_match:
+            # Untagged, or a (SET) printing the library lacks: the whole line,
+            # as before, so "Hazmat Suit (Used)" still finds its card.
             card = (resolver.get_by_name(
                 card_name,
                 allowed_set_types=allowed_set_types,
