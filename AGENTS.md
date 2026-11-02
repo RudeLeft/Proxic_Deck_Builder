@@ -2620,8 +2620,11 @@ every feature together and is exempt.
   discovering Scryfall's current `default_cards` bulk export from `/bulk-data`,
   refreshing every trusted Scryfall catalog plus the current official Wizards
   Comprehensive Rules Supertype taxonomy, auditing the full snapshot, and
-  emitting a Markdown evidence report. This rule governs the script's contract
-  only, which `tests/test_taxonomy_audit_contract.py` checks without network
+  emitting a Markdown evidence report. The audit MUST also fail when fewer than
+  99% of playable cards carry a print picture (PNG) and an art crop, the two
+  pictures printing and the Proxic Arena send download, so a Scryfall image
+  change is found by the weekly check and not by a user. This rule governs the
+  script's contract only, which `tests/test_taxonomy_audit_contract.py` checks without network
   access. _Verification:_ **AUTO**.
 - **VER-013 — MUST:** Treat an actual full upstream taxonomy audit as evidence
   only when `tests/taxonomy_audit.py --current` really ran through the
@@ -2641,7 +2644,9 @@ every feature together and is exempt.
   pull request: it reports. A passing run MUST say so in one plain line on its
   run page (an Annotations notice and the run summary: "Nothing to do", with
   how many printings and sets it checked), so a quiet week needs no report
-  opened; a failing run says "Needs attention" there too.
+  opened; a failing run says "Needs attention" there too. A passing run MUST
+  close, with a comment, any alert issue an earlier failure left open. The
+  audit MUST run on the Python version `build-windows.yml` builds the app with.
   _Verification:_ **AUTO**.
 - **VER-006 — MUST:** Run the Windows simulated-Tk-scaling geometry test at
   100/125/150% after a control, font, spacing, or layout change; report it only as
@@ -2681,6 +2686,19 @@ every feature together and is exempt.
 - **REL-006 — MUST:** Finish a task only after confirming the owning-module
   boundary, regression coverage, behavior preservation, truthful test status,
   single-document policy, and release-gate result. _Verification:_ **REVIEW**.
+- **REL-008 — MUST:** A tag-triggered Windows release MUST stop before building
+  unless its tag is exactly `v` plus `pyproject.toml`'s version. The in-app
+  updater offers the newest release by its tag while the installed app reports
+  pyproject's version, so a tag ahead of pyproject would ship an app that always
+  calls itself out of date. Bump the version, commit, then tag.
+  _Verification:_ **AUTO**.
+- **REL-009 — MUST:** A release's "What's changed" MUST be hand-written
+  plain-English bullets. Put them in the annotated tag
+  (`git tag -a vX.Y.Z --cleanup=verbatim -F notes.txt`, notes kept outside the
+  project: a notes file in it breaks the single-document check); the release
+  workflow publishes a tag message containing `- ` bullets as the notes. A tag
+  without one falls back to commit subjects, which then MUST be replaced with
+  `gh release edit`. _Verification:_ **AUTO**.
 
 ## Rule → enforcing test map
 
@@ -2713,6 +2731,7 @@ the behavior it governs, update its test in the same change (CHG-007).
 | BEH-*, callback safety | `tests/test_ui_callback_safety.py`, `tests/test_ui_component_contract.py` |
 | DATA-*, VER-009, VER-013 | `tests/test_trusted_filter_contract.py`, `tests/test_search_printings_cascade.py`, `tests/test_taxonomy_printings.py`, `tests/test_future_magic.py`, `tests/test_card_comparison.py`, `tests/test_taxonomy_audit_contract.py`; full upstream evidence: `.github/workflows/taxonomy-audit.yml` → `tests/taxonomy_audit.py --current` |
 | VER-015 | `tests/test_taxonomy_audit_contract.py` |
+| REL-008, REL-009 | `tests/test_release_workflow_contract.py` |
 | PORT-001 through PORT-005, PORT-007 | `tests/test_portability_contract.py`, `tests/test_hardening_regressions.py` |
 | PORT-006, single-instance | `windows_tests/test_single_instance_windows.py`, `tests/test_portability_contract.py` |
 | SIZ-003, SIZ-004, LAY-004, VER-006 simulated Tk scaling | `windows_tests/test_ui_geometry_windows.py`, `windows_tests/test_app_startup_windows.py` |

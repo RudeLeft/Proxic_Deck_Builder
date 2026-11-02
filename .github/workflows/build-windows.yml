@@ -47,6 +47,23 @@ jobs:
           python-version: '3.14'
           cache: 'pip'
 
+      - name: Check the tag matches the app's version
+        # REL-008. The in-app updater offers the newest release by its tag and
+        # the installed app reports pyproject's version. A tag ahead of
+        # pyproject would publish an app that always thinks it is out of date,
+        # so a mismatched tag stops here, before anything is built.
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tag = "${{ github.ref_name }}"
+          if ($tag -ne "v$version") {
+            Write-Output "::error title=Tag and version differ::Tag $tag does not match pyproject.toml version $version. Bump the version, commit, and tag v<version>."
+            exit 1
+          }
+          Write-Output "Tag $tag matches pyproject.toml version $version."
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -183,18 +200,35 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          # Build "What's changed" from commit subjects since the previous
-          # version tag, so each release lists what actually changed.
+          # REL-009. "What's changed" is the annotated tag's own message when it
+          # has one: hand-written plain-English bullets, made with
+          #   git tag -a vX.Y.Z --cleanup=verbatim -F notes.txt
+          # (verbatim, or git drops lines starting with '#'). Read through the
+          # API, since a checkout can leave the tag lightweight locally. A tag
+          # with no message falls back to the commit subjects, as before.
+          $changes = $null
+          $ref = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" | ConvertFrom-Json
+          if ($LASTEXITCODE -eq 0 -and $ref.object.type -eq "tag") {
+            $message = gh api "repos/$env:GITHUB_REPOSITORY/git/tags/$($ref.object.sha)" --jq ".message"
+            $message = ($message -join "`n").Trim()
+            # Only a message of bullets is release notes; a one-line "Version
+            # X" annotation is not.
+            if ($LASTEXITCODE -eq 0 -and $message -match '(?m)^- ') {
+              $changes = $message
+            }
+          }
           $prev = git tag --list "v*" --sort=-v:refname |
             Where-Object { $_ -ne $tag } | Select-Object -First 1
-          if ($prev) {
+          if ($changes) {
+            Write-Output "Release notes: the tag's own message."
+          } elseif ($prev) {
             $changes = git log "${prev}..${tag}" --no-merges --pretty=format:"- %s" |
               Where-Object { $_ -and ($_ -notmatch 'Bump version') }
           } else {
             $changes = @("- Initial public release.")
           }
           if (-not $changes) { $changes = @("- Maintenance and internal improvements.") }
-          $changesText = ($changes -join "`n")
+          $changesText = if ($changes -is [string]) { $changes } else { ($changes -join "`n") }
           $notes = @"
           ## What's changed
 

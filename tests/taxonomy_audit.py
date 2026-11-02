@@ -24,7 +24,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mtgdb.database.bulk_import import iter_card_objects
-from mtgdb.database.constants import ART_LAYOUTS
+from mtgdb.database.constants import ART_LAYOUTS, NON_CARD_LAYOUTS
 from mtgdb.database.db import CardDB
 from mtgdb.database.semantics import _BFM_COMPLETE_TYPE_LINE
 from mtgdb.database import semantics as S
@@ -104,8 +104,25 @@ def source_inventory(path):
     }
 
 
+# Below this share of cards with a picture, Scryfall's image data changed shape.
+PICTURE_FLOOR = 0.99
+
+
+def picture_coverage(db):
+    """Count playable cards and how many carry a PNG and an art-crop link."""
+    marks = ",".join("?" for _ in NON_CARD_LAYOUTS)
+    row = db.conn.execute(
+        "SELECT COUNT(*), "
+        "SUM(COALESCE(image_png, '') <> ''), "
+        "SUM(COALESCE(image_art_crop, '') <> '') "
+        f"FROM cards WHERE COALESCE(layout, '') NOT IN ({marks})",
+        tuple(NON_CARD_LAYOUTS)).fetchone()
+    return {"cards": row[0] or 0, "png": row[1] or 0, "art_crop": row[2] or 0}
+
+
 def markdown(result):
     source = result["source"]
+    pictures = result["pictures"]
     checks = result["checks"]
     lines = [
         "# Full Scryfall Taxonomy & Printing Audit",
@@ -131,6 +148,8 @@ def markdown(result):
         f"| Trusted Mechanics labels | {result['keywords']:,} |",
         f"| Multi-face objects | {source['multi_face_objects']:,} |",
         f"| Objects with related parts | {source['related_objects']:,} |",
+        f"| Cards with a print picture (PNG) | {pictures['png']:,} of {pictures['cards']:,} |",
+        f"| Cards with an art crop | {pictures['art_crop']:,} of {pictures['cards']:,} |",
         "",
         "## Category breakdown",
         "",
@@ -203,6 +222,7 @@ def main(argv=None):
     else:
         refreshed = 0
     db_cards = db.load_cards(iter_card_objects(bulk_path), minimum_count=1000)
+    pictures = picture_coverage(db)
     compatibility = db.refresh_compatibility_diagnostics()
 
     discovered_sets = db.sets()
@@ -290,6 +310,13 @@ def main(argv=None):
             not compatibility.get("unknown_layouts")),
         "current Scryfall legality statuses are understood": (
             not compatibility.get("unknown_legality_statuses")),
+        # Printing needs each card's PNG and the Proxic Arena send needs its
+        # art crop. A few new cards may still lack pictures; a renamed or
+        # dropped Scryfall image field empties them all.
+        "nearly every card still has a print picture and an art crop": (
+            pictures["cards"] > 0
+            and pictures["png"] >= PICTURE_FLOOR * pictures["cards"]
+            and pictures["art_crop"] >= PICTURE_FLOOR * pictures["cards"]),
     }
 
     result = {
@@ -315,6 +342,7 @@ def main(argv=None):
         # it the report always showed "unavailable"/"none" even when a check for
         # an unknown layout or legality status failed.
         "compatibility": compatibility,
+        "pictures": pictures,
     }
     report = markdown(result)
     if args.report:

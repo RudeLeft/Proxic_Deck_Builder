@@ -12,6 +12,14 @@ from mtgdb.database.authorities import (
 from mtgdb.database.schema import RULES_SUPERTYPES_META_KEY
 
 
+def _python_version(workflow):
+    """The python-version a workflow's setup-python step asks for."""
+    for line in workflow.splitlines():
+        if line.strip().startswith("python-version:"):
+            return line.split(":", 1)[1].strip().strip("'\"")
+    return None
+
+
 def main():
     audit = (ROOT / "tests/taxonomy_audit.py").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/taxonomy-audit.yml").read_text(
@@ -80,6 +88,18 @@ def main():
             # Assigned and mentioned, which is what GitHub always emails.
             and "--assignee" in workflow
             and "@%s" in workflow),
+        "a passing run closes an earlier alert": (
+            "gh issue close" in workflow
+            and "Close an earlier alert now that the check passes" in workflow),
+        "the audit checks Scryfall still gives print pictures and art crops": (
+            "nearly every card still has a print picture and an art crop" in audit
+            and "PICTURE_FLOOR = 0.99" in audit
+            and "image_png" in audit and "image_art_crop" in audit),
+        "the audit runs on the Python the Windows app is built with": (
+            _python_version(workflow) is not None
+            and _python_version(workflow) == _python_version(
+                (ROOT / ".github/workflows/build-windows.yml").read_text(
+                    encoding="utf-8"))),
     }
     ok = True
     for label, passed in checks.items():

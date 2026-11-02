@@ -22,10 +22,12 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
-      - name: Set up Python 3.12
+      - name: Set up Python 3.14
+        # The version the Windows app is built with, so the audit runs the
+        # code the way it ships.
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Install project
         run: python -m pip install -e .
@@ -64,6 +66,23 @@ jobs:
             echo
             echo "The full report is the **scryfall-taxonomy-audit** file at the bottom of this page."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Close an earlier alert now that the check passes
+        # VER-015: an alert issue left open after the problem went away reads
+        # as a problem still waiting. A passing run says so on it and closes it.
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          for title in "Scryfall taxonomy drift needs attention" "Scheduled Scryfall taxonomy audit could not finish"; do
+            gh issue list --state open --json number,title \
+              --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null \
+              | while read -r number; do
+                  gh issue close "$number" --comment "The weekly Scryfall check passes again, so this is closed: $run_url" \
+                    || echo "::warning::Could not close issue #$number."
+                done
+          done
 
       - name: Open an issue and email the owner when the job fails
         # Any failure needs a person: either the audit step itself exits
