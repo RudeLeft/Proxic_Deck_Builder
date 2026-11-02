@@ -14,14 +14,16 @@ permissions:
 
 jobs:
   taxonomy-audit:
-    runs-on: ubuntu-latest
+    # Named, not ubuntu-latest: a runner change is then a choice made here,
+    # not a notice on every run.
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -34,11 +36,34 @@ jobs:
 
       - name: Upload audit evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scryfall-taxonomy-audit
           path: taxonomy-audit.md
           if-no-files-found: warn
+
+      - name: Say what the check found
+        # The run page's headline: one plain line in Annotations and a short
+        # summary, so a quiet week reads "Nothing to do" without opening the
+        # report. A failure says so in the step below instead.
+        if: success()
+        run: |
+          count() { grep -m1 "^| $1 |" taxonomy-audit.md | awk -F'|' '{gsub(/ /, "", $3); print $3}'; }
+          printings=$(count "Card printing objects")
+          sets=$(count "Source set codes")
+          data=$(grep -m1 '^Scryfall bulk updated:' taxonomy-audit.md | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}' | head -n 1)
+          line="Scryfall's card data has nothing new the Deck Builder can't handle, so no update is needed. Checked ${printings} printings in ${sets} sets (Scryfall data of ${data})."
+          echo "::notice title=Nothing to do::${line}"
+          {
+            echo "## ✅ Nothing to do"
+            echo
+            echo "Scryfall's card data has nothing new the Deck Builder can't handle, so no update is needed."
+            echo
+            echo "- Checked: ${printings} printings in ${sets} sets"
+            echo "- Scryfall data from: ${data}"
+            echo
+            echo "The full report is the **scryfall-taxonomy-audit** file at the bottom of this page."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open an issue and email the owner when the job fails
         # Any failure needs a person: either the audit step itself exits
@@ -71,6 +96,12 @@ jobs:
             fi
             printf '\n\n---\nRun: %s\n' "$run_url"
           } > issue.md
+          echo "::error title=Needs attention::${intro} An issue was opened and emailed to you."
+          {
+            echo "## ⚠️ Needs attention"
+            echo
+            echo "${intro} An issue was opened and emailed to you."
+          } >> "$GITHUB_STEP_SUMMARY"
           existing=$(gh issue list --state open --json number,title \
             --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null \
             | head -n 1 || true)

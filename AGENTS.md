@@ -2638,7 +2638,10 @@ every feature together and is exempt.
   found drift or the run never finished. No workflow here watches the game
   engine Arena runs: what Arena plays is Arena's to publish (DECK-012, ARN-015),
   so an engine update on Arena needs no Deck Builder release. The workflow MUST NOT rewrite a source file or open a
-  pull request: it reports.
+  pull request: it reports. A passing run MUST say so in one plain line on its
+  run page (an Annotations notice and the run summary: "Nothing to do", with
+  how many printings and sets it checked), so a quiet week needs no report
+  opened; a failing run says "Needs attention" there too.
   _Verification:_ **AUTO**.
 - **VER-006 — MUST:** Run the Windows simulated-Tk-scaling geometry test at
   100/125/150% after a control, font, spacing, or layout change; report it only as

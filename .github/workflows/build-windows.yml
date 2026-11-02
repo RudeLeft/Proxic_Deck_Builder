@@ -33,14 +33,14 @@ jobs:
       WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Full history + tags so the release step can list commits since the
           # previous version tag in the notes.
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           # Match the version used for local builds so the packaged runtime is
           # the one actually exercised during development.
@@ -106,7 +106,7 @@ jobs:
         run: python windows_tests/smoke_packaged_windows.py
 
       - name: Upload the portable app as an artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ProxicDeckBuilder-windows
           # The smoke test removes dist/ProxicDeckBuilder/data after it runs. This
@@ -165,7 +165,7 @@ jobs:
           Get-Content "release_dist/SHA256SUMS.txt"
 
       - name: Upload the release zips as artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ProxicDeckBuilder-release-zips
           path: |

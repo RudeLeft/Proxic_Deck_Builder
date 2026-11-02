@@ -65,7 +65,12 @@ def main():
             "workflow_dispatch:" in workflow and "schedule:" in workflow
             and "tests/taxonomy_audit.py --current" in workflow),
         "CI retains Markdown audit evidence": (
-            "taxonomy-audit.md" in workflow and "upload-artifact@v4" in workflow),
+            "taxonomy-audit.md" in workflow and "actions/upload-artifact@" in workflow),
+        "a passing run says so in one plain line on its run page": (
+            "if: success()" in workflow
+            and "::notice title=Nothing to do::" in workflow
+            and "GITHUB_STEP_SUMMARY" in workflow
+            and "Card printing objects" in workflow),
         "CI emails the owner by issue when the job fails, drift or not": (
             "issues: write" in workflow
             # Any failure of the job, not only the audit step's own.
