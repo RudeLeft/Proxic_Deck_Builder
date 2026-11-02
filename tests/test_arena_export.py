@@ -4,6 +4,7 @@ import ast
 import hashlib
 import io
 import json
+import os
 import pathlib
 import re
 import sys
@@ -941,7 +942,9 @@ def _fingerprints_check():
         sha = first(picture)
         first.save()
         reopened = PictureFingerprints(record)
-        remembered = reopened._known.get(str(picture.resolve()))
+        # The record's key is the path as os.path.abspath writes it (a runner's
+        # temp folder can have a short and a long spelling; resolve() picks the other).
+        remembered = reopened._known.get(os.path.abspath(picture))
         picture.write_bytes(b"changed!")
         changed = reopened(picture)
     return (
