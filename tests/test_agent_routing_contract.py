@@ -47,6 +47,7 @@ SOURCE_MARKERS = {
         "def printing_accepted(", "def arena_export_deck("),
     "mtgdb/deck/arena_check.py": ("class ArenaCheck", "def check_for_arena("),
     "mtgdb/arena/export.py": ("def art_filename(", "def build_package("),
+    "mtgdb/arena/pictures.py": ("def light_jpeg(", "def ensure_art_crop("),
     "mtgdb/arena/connection.py": ("def link_computer(", "def obtain_rules("),
     "mtgdb/ui/arena_connection.py": (
         "class ArenaLinkForm", "def arena_link_line("),

@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 from mtgdb.arena import connection
 from mtgdb.arena.connection import (
     DUPLICATE, NAME_TAKEN, REFUSED, SENT, SOURCE_ARENA, SOURCE_BUILT_IN,
-    SOURCE_SAVED, UNAUTHORIZED, UNAVAILABLE, ArenaConnectionError,
+    SOURCE_SAVED, UNAUTHORIZED, UNAVAILABLE, ArenaConnectionError, ArenaLinkRefused,
     ArenaConnectionStore, ArenaLink, DeckNamesFetch, RulesFetch,
     fetch_deck_names, fetch_known_pictures, fetch_rules, link_computer,
     normalize_address, obtain_rules, send_deck,
@@ -294,11 +294,21 @@ def _known_pictures_check():
     opener = _Opener(_Response(200, json.dumps({"known": [b, "f" * 64]}).encode()))
     got = fetch_known_pictures("https://p.example", "tok", [c, b, a, b], opener=opener)
     sent = opener.requests[0]
-    many = _Opener(_Response(200, b'{"known": []}'))
-    fetch_known_pictures("https://p.example", "tok", [f"{n:064x}" for n in range(500)], opener=many)
+    # Spec 0051 on Arena: a 100-card deck with art crops has more pictures than
+    # one question may name, so it asks in batches every Arena answers.
+    hashes = [f"{n:064x}" for n in range(500)]
+    many = _Opener(*[_Response(200, json.dumps({"known": [hashes[7], hashes[450]]}).encode())
+                     for _ in range(3)])
+    in_batches = fetch_known_pictures("https://p.example", "tok", hashes, opener=many)
 
     def known(answer):
         return fetch_known_pictures("https://p.example", "tok", [a], opener=_Opener(answer))
+
+    try:
+        known(_http_error(401))
+        refused = False
+    except ArenaLinkRefused:
+        refused = True
 
     return (
         # Only what was asked about counts, whatever Arena says.
@@ -306,9 +316,12 @@ def _known_pictures_check():
         and sent.full_url == "https://p.example/api/deck-builder/pictures/known"
         and sent.get_method() == "POST"
         and json.loads(sent.data.decode()) == {"sha256": [a, b, c]}
-        and len(json.loads(many.requests[0].data.decode())["sha256"]) == 200
+        and [len(json.loads(r.data.decode())["sha256"]) for r in many.requests] == [200, 200, 100]
+        # Each batch counts only what it asked about.
+        and in_batches == frozenset({hashes[7], hashes[450]})
         and known(OSError("x")) == frozenset()
-        and known(_http_error(401)) == frozenset()
+        # A removed link stops the send before the deck is packed.
+        and refused
         # Nothing to ask: no request at all.
         and fetch_known_pictures("https://p.example", "tok", [], opener=_Opener()) == frozenset())
 
@@ -318,12 +331,22 @@ def _send_check():
     created = _Opener(_Response(201, json.dumps({
         "deckId": "d1", "displayName": "Ape Tribal 2", "totalCards": 60,
         "tokenPictures": 1}).encode()))
-    sent = send_deck("https://p.example", "tok", b"PK-zip-bytes", "Ape Tribal.zip",
-                     name="Ape Tribal 2", opener=created)
+    heard = []
+    package = b"PK-zip-bytes" * 50_000
+    sent = send_deck("https://p.example", "tok", package, "Ape Tribal.zip",
+                     name="Ape Tribal 2", opener=created,
+                     progress=lambda done, total: heard.append((done, total)))
     request = created.requests[0]
-    body = request.data
+    # The body goes piece by piece, the package held once (never joined here).
+    body = b"".join(bytes(piece) for piece in request.data)
     unnamed = _Opener(_Response(201, b"{}"))
     send_deck("https://p.example", "tok", b"z", "d.zip", opener=unnamed)
+    unnamed_body = b"".join(bytes(piece) for piece in unnamed.requests[0].data)
+
+    def bare(code):
+        """A refusal that is not Arena's own JSON: a proxy's or a gateway's page."""
+        return urllib.error.HTTPError(
+            "https://arena", code, "x", {}, io.BytesIO(b"<html>Request Entity Too Large</html>"))
 
     def answer(error):
         return send_deck("https://p.example", "tok", b"zip", "d.zip", opener=_Opener(error))
@@ -346,9 +369,19 @@ def _send_check():
         and request.get_header("Content-type").startswith("multipart/form-data; boundary=")
         and b'name="name"' + crlf + crlf + b"Ape Tribal 2" + crlf in body
         and b'name="package"; filename="Ape Tribal.zip"' in body
-        and b"PK-zip-bytes" in body
+        and package in body
+        and request.get_header("Content-length") == str(len(body))
+        # The upload's progress is heard as it goes, ending at the whole body.
+        and len(heard) > 2 and heard[-1] == (len(body), len(body))
+        and all(a[0] <= b[0] for a, b in zip(heard, heard[1:]))
         # No name typed: no name field at all.
-        and b'name="name"' not in unnamed.requests[0].data
+        and b'name="name"' not in unnamed_body
+        # Refused before Arena could answer: said plainly, with the size when too large.
+        and answer(bare(413)).status == REFUSED
+        and "larger than the connection" in answer(bare(413)).detail
+        and answer(bare(502)).status == UNAVAILABLE and "HTTP 502" in answer(bare(502)).detail
+        # Arena's own code travels with its refusal.
+        and answer(_http_error(422, "gone", errorCode="PICTURE_NOT_HELD")).code == "PICTURE_NOT_HELD"
         and duplicate.status == DUPLICATE and duplicate.deck_name == "Burn"
         and taken.status == NAME_TAKEN and taken.deck_name == "Burn"
         and refused.status == REFUSED and refused.problems == ("58 cards", "5 Bolt")

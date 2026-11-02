@@ -52,7 +52,8 @@ REQUEST_TIMEOUT = 60
 # A send carries every picture of a deck and Arena checks every card before it
 # answers; on a slow connection that is minutes.
 SEND_TIMEOUT = 600
-# Arena answers about at most this many pictures at once: a package's limit.
+# Arena answers about at most this many pictures at once (every Arena: 200 was
+# a package's limit before 1.28.0), so a bigger deck asks in batches.
 KNOWN_PICTURES_LIMIT = 200
 MAX_RULES_BYTES = 64 * 1024 * 1024
 
@@ -261,26 +262,39 @@ def fetch_deck_names(address, token, opener=None):
     return DeckNamesFetch("ok", names)
 
 
+class ArenaLinkRefused(Exception):
+    """Arena refused this computer's token: the player removed the link."""
+
+
 def fetch_known_pictures(address, token, hashes, opener=None):
     """Of ``hashes``, the pictures this player's decks on Arena already hold.
 
-    Any failure answers "none": every picture is then sent, which is only
-    slower.
+    Asked in batches of ``KNOWN_PICTURES_LIMIT``, which every Arena answers
+    (a 100-card deck with art crops has more pictures than that). Arena
+    refusing the token raises ``ArenaLinkRefused``, so the send stops before
+    the deck is packed; any other failure answers "none": every picture is
+    then sent, which is only slower.
     """
-    wanted = sorted(set(hashes))[:KNOWN_PICTURES_LIMIT]
-    if not wanted:
-        return frozenset()
-    body = json.dumps({"sha256": wanted}).encode("utf-8")
-    try:
-        request = _request(
-            f"{normalize_address(address)}/api/deck-builder/pictures/known",
-            method="POST", body=body,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-        with (opener or _opener()).open(request, timeout=REQUEST_TIMEOUT) as response:
-            payload = json.loads(_read_body(response).decode("utf-8"))
-        return frozenset(str(sha) for sha in payload["known"]) & frozenset(wanted)
-    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
-        return frozenset()
+    wanted = sorted(set(hashes))
+    known = set()
+    for start in range(0, len(wanted), KNOWN_PICTURES_LIMIT):
+        batch = wanted[start:start + KNOWN_PICTURES_LIMIT]
+        body = json.dumps({"sha256": batch}).encode("utf-8")
+        try:
+            request = _request(
+                f"{normalize_address(address)}/api/deck-builder/pictures/known",
+                method="POST", body=body,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+            with (opener or _opener()).open(request, timeout=REQUEST_TIMEOUT) as response:
+                payload = json.loads(_read_body(response).decode("utf-8"))
+            known |= {str(sha) for sha in payload["known"]} & set(batch)
+        except urllib.error.HTTPError as error:
+            if error.code == 401:
+                raise ArenaLinkRefused() from None
+            return frozenset()
+        except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+            return frozenset()
+    return frozenset(known)
 
 
 # Statuses of one send.
@@ -291,6 +305,10 @@ REFUSED = "refused"
 UNAUTHORIZED = "unauthorized"
 UNAVAILABLE = "unavailable"
 
+# How much of the package goes per write while it uploads: progress is told
+# once per piece.
+UPLOAD_PIECE = 256 * 1024
+
 
 @dataclass(frozen=True)
 class SendResult:
@@ -299,8 +317,10 @@ class SendResult:
     ``sent``: the deck is in the Deck Depot as ``deck_name``. ``duplicate``:
     this exact package is already there, as ``deck_name``. ``name_taken``: a
     deck of yours already has the name. ``refused``: Arena's import said why,
-    in ``detail`` and ``problems``. ``unauthorized``: the link was removed.
-    ``unavailable``: Arena could not be reached.
+    in ``detail`` and ``problems``, with its ``code``; or something between
+    here and Arena refused the upload (``detail`` says so in plain words).
+    ``unauthorized``: the link was removed. ``unavailable``: Arena could not
+    be reached.
     """
 
     status: str
@@ -310,10 +330,15 @@ class SendResult:
     deck_id: str = ""
     total_cards: int = 0
     token_pictures: int = 0
+    code: str = ""
 
 
 def _multipart(fields, file_field, filename, data):
-    """Encode ``fields`` and one file as ``multipart/form-data``: ``(body, content type)``."""
+    """Encode ``fields`` and one file as ``multipart/form-data``: ``(head, data, tail, content type)``.
+
+    The file's bytes are not copied into one body: the request sends the head,
+    the file and the tail in turn, so a package is held in memory once.
+    """
     boundary = f"----ProxicDeckBuilder{os.urandom(12).hex()}"
     parts = []
     for name, value in fields.items():
@@ -324,20 +349,54 @@ def _multipart(fields, file_field, filename, data):
     parts.append(
         f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; '
         f'filename="{safe}"\r\nContent-Type: application/zip\r\n\r\n'.encode("utf-8"))
-    parts.append(data)
-    parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
-    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+    tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+    return b"".join(parts), data, tail, f"multipart/form-data; boundary={boundary}"
 
 
-def send_deck(address, token, data, filename, name=None, opener=None):
-    """Send one deck package to this player's Deck Depot (Arena spec 0022)."""
+def _upload(head, data, tail, progress=None):
+    """The request body, piece by piece, with ``progress(sent, total)`` after each."""
+    total = len(head) + len(data) + len(tail)
+    view = memoryview(data)
+    yield head
+    sent = len(head)
+    for start in range(0, len(view), UPLOAD_PIECE):
+        piece = view[start:start + UPLOAD_PIECE]
+        yield piece
+        sent += len(piece)
+        if progress:
+            progress(sent, total)
+    yield tail
+    if progress:
+        progress(total, total)
+
+
+def _megabytes(count):
+    return f"{count / (1024 * 1024):.0f} MB" if count >= 1024 * 1024 else f"{max(1, count // 1024)} KB"
+
+
+def _not_arenas(error, size):
+    """Plain words for a refusal that is not Arena's own answer (a proxy's page, a gateway)."""
+    if error.code == 413:
+        return (f"The deck's package ({_megabytes(size)}) is larger than the connection to "
+                "Proxic Arena accepts, so it never reached Arena.")
+    return (f"Something between this computer and Proxic Arena refused the deck "
+            f"(HTTP {error.code}) before Arena could answer. Try again later.")
+
+
+def send_deck(address, token, data, filename, name=None, opener=None, progress=None):
+    """Send one deck package to this player's Deck Depot (Arena spec 0022).
+
+    ``progress(sent, total)`` hears the upload's bytes as they go.
+    """
     fields = {"name": name} if name else {}
-    body, content_type = _multipart(fields, "package", filename, data)
+    head, data, tail, content_type = _multipart(fields, "package", filename, data)
+    size = len(head) + len(data) + len(tail)
     try:
         request = _request(
             f"{normalize_address(address)}/api/deck-builder/decks", method="POST",
-            body=body, headers={
-                "Authorization": f"Bearer {token}", "Content-Type": content_type})
+            body=_upload(head, data, tail, progress), headers={
+                "Authorization": f"Bearer {token}", "Content-Type": content_type,
+                "Content-Length": str(size)})
         with (opener or _opener()).open(request, timeout=SEND_TIMEOUT) as response:
             payload = json.loads(_read_body(response).decode("utf-8"))
         return SendResult(
@@ -349,17 +408,21 @@ def send_deck(address, token, data, filename, name=None, opener=None):
         if error.code == 401:
             return SendResult(UNAUTHORIZED)
         refusal = _refusal(error)
+        if not refusal and error.code in (400, 409, 413, 422, 502, 503, 504, 520, 524):
+            # Not Arena's own answer: Arena always says why in JSON.
+            status = REFUSED if error.code == 413 else UNAVAILABLE
+            return SendResult(status, detail=_not_arenas(error, size), code=f"HTTP_{error.code}")
         code = str(refusal.get("errorCode") or "")
         detail = str(refusal.get("detail") or "")
         problems = tuple(str(problem) for problem in refusal.get("problems") or ())
         if code == "DUPLICATE_PACKAGE":
-            return SendResult(DUPLICATE, deck_name=_quoted(detail), detail=detail)
+            return SendResult(DUPLICATE, deck_name=_quoted(detail), detail=detail, code=code)
         if code == "DECK_NAME_TAKEN":
             return SendResult(
-                NAME_TAKEN, deck_name=problems[0] if problems else "", detail=detail)
+                NAME_TAKEN, deck_name=problems[0] if problems else "", detail=detail, code=code)
         if error.code in (400, 409, 413, 422):
-            return SendResult(REFUSED, detail=detail, problems=problems)
-        return SendResult(UNAVAILABLE, detail=detail)
+            return SendResult(REFUSED, detail=detail, problems=problems, code=code)
+        return SendResult(UNAVAILABLE, detail=detail, code=code)
     except (urllib.error.URLError, OSError, ValueError, TypeError):
         return SendResult(UNAVAILABLE)
 

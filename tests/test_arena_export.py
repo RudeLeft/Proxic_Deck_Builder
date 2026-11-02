@@ -47,7 +47,7 @@ def _stub_downloader(calls=None):
 
     Each card gets its own bytes, so each picture has its own hash.
     """
-    def ensure(card, cache_dir):
+    def ensure(card, cache_dir, cancel_event=None):
         if calls is not None:
             calls.append(card.get("id"))
         if not card.get("image_png"):
@@ -76,7 +76,7 @@ def _two_faced(identifier, front, back, set_code, layout="transform"):
 
 def _stub_face_downloader(calls=None, fail=()):
     """Stand in for printing.service.ensure_face_png without a network."""
-    def ensure(card, face_index, cache_dir):
+    def ensure(card, face_index, cache_dir, cancel_event=None):
         if calls is not None:
             calls.append((card.get("id"), face_index))
         if (card.get("id"), face_index) in fail:
@@ -815,6 +815,163 @@ def _window_contract_check():
         and "ArenaExportMixin" in app)
 
 
+def _real_png(path, size=(372, 520), border=(160, 20, 20)):
+    """A card-shaped RGBA PNG: noisy art inside a coloured border, see-through corners."""
+    from PIL import Image
+    import random
+    image = Image.new("RGBA", size, border + (255,))
+    pixels = image.load()
+    chance = random.Random(7)
+    for y in range(20, size[1] - 20):
+        for x in range(20, size[0] - 20):
+            pixels[x, y] = (chance.randrange(256), 90, 140, 255)
+    for y in range(8):
+        for x in range(8):
+            pixels[x, y] = (0, 0, 0, 0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, "PNG")
+    return str(path)
+
+
+def _light_pictures_check():
+    """ARN-017: the light JPEG of a print PNG -- full size, much lighter, corners in the border colour, made once."""
+    from PIL import Image
+    from mtgdb.arena.pictures import JPEG_QUALITY, light_jpeg
+    with tempfile.TemporaryDirectory() as directory:
+        base = pathlib.Path(directory)
+        png = _real_png(base / "print_png" / "Lightning Bolt [LEA].png")
+        jpeg = light_jpeg(png, str(base / "arena_jpg"))
+        made_at = pathlib.Path(jpeg).stat().st_mtime_ns
+        again = light_jpeg(png, str(base / "arena_jpg"))
+        with Image.open(jpeg) as read:
+            size, mode = read.size, read.mode
+            corner = read.convert("RGB").getpixel((2, 2))
+        light = pathlib.Path(jpeg).stat().st_size * 2 < pathlib.Path(png).stat().st_size
+        return (
+            JPEG_QUALITY == 88
+            and pathlib.Path(jpeg).name == "Lightning Bolt [LEA].jpg"
+            and size == (372, 520) and mode == "RGB" and light
+            and corner[0] > 120 and corner[1] < 70 and corner[2] < 70
+            # Made once: a second send reuses it.
+            and again == jpeg and pathlib.Path(jpeg).stat().st_mtime_ns == made_at
+            and not list((base / "arena_jpg").glob("*.part")))
+
+
+def _art_crop_source_check():
+    """ARN-017: each picture's art crop comes from Scryfall's own crop of that face."""
+    from mtgdb.arena.pictures import art_crop_url
+    single = {"image_art_crop": "https://cards/bolt-crop.jpg"}
+    delver = _two_faced("dv", "Delver of Secrets", "Insectile Aberration", "isd")
+    delver["card_faces"][0]["image_uris"]["art_crop"] = "https://cards/delver-crop.jpg"
+    delver["card_faces"][1]["image_uris"]["art_crop"] = "https://cards/insectile-crop.jpg"
+    return (
+        art_crop_url(single) == "https://cards/bolt-crop.jpg"
+        and art_crop_url(delver) == "https://cards/delver-crop.jpg"
+        and art_crop_url(delver, 1) == "https://cards/insectile-crop.jpg"
+        and art_crop_url({"name": "No crop"}) is None
+        and art_crop_url(delver, 5) is None)
+
+
+def _jpeg_and_crops_package_check():
+    """ARN-017, ARN-014: JPEGs and art crops when Arena takes them; stored; the same deck, the same bytes."""
+    deck = Deck("Light", "modern")
+    deck.add(_card("a", "Lightning Bolt", "lea"), "main", 4)
+    deck.add(_card("b", "Shock", "m21"), "main", 4)
+    deck.add(_card("x", "No Crop", "tst"), "main", 4)
+
+    def prepare(path):
+        jpeg = pathlib.Path(path).with_suffix(".jpg")
+        jpeg.write_bytes(b"\xff\xd8\xff" + pathlib.Path(path).read_bytes())
+        return str(jpeg)
+
+    def crop(card, face_index):
+        if card["id"] == "x":
+            return None
+        path = pathlib.Path(tempfile.gettempdir()) / f"crop-{card['id']}-{face_index}.jpg"
+        path.write_bytes(b"\xff\xd8\xff" + card["id"].encode())
+        return str(path)
+
+    asked = []
+    with tempfile.TemporaryDirectory() as directory:
+        cache = pathlib.Path(directory)
+        options = {"prepare_picture": prepare, "ensure_crop": crop}
+        light = _package(deck, cache, **options)
+        twice = _package(deck, cache, **options)
+        crop_hash = hashlib.sha256(b"\xff\xd8\xff" + b"a").hexdigest()
+        held = _package(deck, cache, known_pictures=lambda hashes: asked.extend(hashes) or {crop_hash},
+                        **options)
+        plain = _package(deck, cache)
+    members = _members(light)
+    with zipfile.ZipFile(io.BytesIO(light.data)) as archive:
+        infos = {info.filename: info for info in archive.infolist()}
+    named = json.loads(_members(held).get(PICTURES_MEMBER, b"{}"))
+    return (
+        sorted(name for name in members if not name.endswith(".txt")) == [
+            "art_crops/Lightning Bolt [LEA].jpg", "art_crops/Shock [M21].jpg",
+            f"{REAL_ART_DIRECTORY}/Lightning Bolt [LEA].jpg",
+            f"{REAL_ART_DIRECTORY}/No Crop [TST].jpg",
+            f"{REAL_ART_DIRECTORY}/Shock [M21].jpg"]
+        and (light.image_count, light.crop_count) == (3, 2)
+        # Pictures are stored, not squeezed again; every member has one fixed time.
+        and all(info.compress_type == zipfile.ZIP_STORED
+                for name, info in infos.items() if name.endswith(".jpg"))
+        and {info.date_time for info in infos.values()} == {(1980, 1, 1, 0, 0, 0)}
+        and twice.data == light.data
+        # An art crop is a picture Arena may already hold, named instead of sent.
+        and crop_hash in asked
+        and named == {"art_crops/Lightning Bolt [LEA].jpg": crop_hash}
+        and "art_crops/Lightning Bolt [LEA].jpg" not in _members(held)
+        # An Arena that takes PNGs and no crops (nothing injected) gets just that.
+        and sorted(name for name in _members(plain) if not name.endswith(".txt")) == [
+            f"{REAL_ART_DIRECTORY}/Lightning Bolt [LEA].png",
+            f"{REAL_ART_DIRECTORY}/No Crop [TST].png",
+            f"{REAL_ART_DIRECTORY}/Shock [M21].png"]
+        and plain.crop_count == 0)
+
+
+def _fingerprints_check():
+    """ARN-017: a picture's SHA-256 is remembered by file, size and time, and kept for the next send."""
+    from mtgdb.arena.pictures import PictureFingerprints
+    with tempfile.TemporaryDirectory() as directory:
+        base = pathlib.Path(directory)
+        picture = base / "p.jpg"
+        picture.write_bytes(b"one")
+        record = base / "arena_fingerprints.json"
+        first = PictureFingerprints(record)
+        sha = first(picture)
+        first.save()
+        reopened = PictureFingerprints(record)
+        remembered = reopened._known.get(str(picture.resolve()))
+        picture.write_bytes(b"changed!")
+        changed = reopened(picture)
+    return (
+        sha == hashlib.sha256(b"one").hexdigest()
+        and remembered is not None and remembered[2] == sha
+        and changed == hashlib.sha256(b"changed!").hexdigest())
+
+
+def _rules_pictures_check():
+    """ARN-017, ARN-012: what pictures Arena takes is its rules' to say; an Arena that does not say takes PNGs."""
+    from mtgdb.deck.arena_support import _format
+    told = _format({"minCards": 60, "maxCards": 100, "maxCopies": 4,
+                    "pictures": {"formats": ["png", "jpeg"], "artCrops": True}}, [])
+    silent = _format({"minCards": 60, "maxCards": 65, "maxCopies": 4}, [])
+    source = (ROOT / "mtgdb/ui/arena_export.py").read_text(encoding="utf-8")
+    return (
+        told.max_cards == 100 and told.picture_formats == {"png", "jpeg"} and told.art_crops
+        and silent.picture_formats == {"png"} and not silent.art_crops
+        # The window follows them: light JPEGs and crops only when Arena takes them.
+        and '"jpeg" in rules_format.picture_formats' in source
+        and "rules_format.art_crops" in source
+        and "if light else None" in source and "if crops else None" in source
+        # A picture Arena said it held but lost: sent again, every picture.
+        and 'result.code == "PICTURE_NOT_HELD"' in source and "pack(None)" in source
+        # A removed link stops the send before packing.
+        and "except ArenaLinkRefused:" in source and "SendResult(UNAUTHORIZED)" in source
+        # The upload's bytes are shown as they go.
+        and "progress=uploaded" in source)
+
+
 def _only_the_window_names_arena_check():
     """ARN-016: Proxic Arena is named to a player only by the export window and its button.
 
@@ -878,6 +1035,14 @@ def main():
         "one window, off Tk, cancellable, saving no file": _window_contract_check(),
         "only the export window and its button name Proxic Arena to a player":
             _only_the_window_names_arena_check(),
+        "a print PNG goes as its light JPEG: full size, much lighter, made once":
+            _light_pictures_check(),
+        "each picture's art crop is Scryfall's crop of that face": _art_crop_source_check(),
+        "JPEGs and art crops when Arena takes them, stored, the same deck the same bytes":
+            _jpeg_and_crops_package_check(),
+        "a picture's fingerprint is remembered for the next send": _fingerprints_check(),
+        "what pictures go is Arena's rules' to say, and the window follows them":
+            _rules_pictures_check(),
     }
     ok = True
     for label, passed in checks.items():

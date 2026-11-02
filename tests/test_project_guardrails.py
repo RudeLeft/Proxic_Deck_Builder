@@ -132,6 +132,12 @@ def _internal_import_allowed(module, imported):
         return imported in {
             "mtgdb.core.atomic_files", "mtgdb.core.secret_store",
             "mtgdb.core.version"}
+    if module == "mtgdb/arena/pictures.py":
+        # The forms a picture goes to Arena in (Arena spec 0051): it converts
+        # print PNGs and fetches art crops through printing's own download.
+        return imported in {
+            "mtgdb.core.cache_names", "mtgdb.core.net", "mtgdb.core.scryfall_json",
+            "mtgdb.printing.service"}
     if module.startswith("mtgdb/arena/"):
         # Naming and packaging only. The card-art download, its cache and its
         # HTTP policy stay in printing and are injected by the caller, so this

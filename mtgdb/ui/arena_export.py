@@ -33,10 +33,16 @@ from tkinter import ttk
 
 from mtgdb.arena.connection import (
     DUPLICATE, NAME_TAKEN, REFUSED, SENT, SOURCE_ARENA, SOURCE_BUILT_IN,
-    UNAUTHORIZED, ArenaConnectionStore, fetch_deck_names, fetch_known_pictures,
-    obtain_rules, send_deck,
+    UNAUTHORIZED, ArenaConnectionStore, ArenaLinkRefused, SendResult,
+    fetch_deck_names, fetch_known_pictures, obtain_rules, send_deck,
 )
-from mtgdb.arena.export import ArenaExportCancelled, ArenaExportJob, build_package
+from mtgdb.arena.export import (
+    ArenaExportCancelled, ArenaExportJob, ArenaExportStopped, build_package,
+)
+from mtgdb.arena.pictures import (
+    CROP_DIRECTORY, FINGERPRINTS_FILE, LIGHT_DIRECTORY, PictureFingerprints,
+    ensure_art_crop, light_jpeg,
+)
 from mtgdb.deck.arena_check import check_for_arena
 from mtgdb.deck.arena_support import rules_from_document
 from mtgdb.deck.file_jobs import submit_deck_file_job
@@ -268,6 +274,13 @@ def arena_rules_note(obtained, checked_at=None):
     if obtained.saved_at:
         when = " on " + time.strftime("%b %d", time.localtime(obtained.saved_at))
     return f"Proxic Arena couldn't be reached, so this uses the deck rules saved{when}."
+
+
+def _size(count):
+    """A byte count as a player reads it: "18 MB", "640 KB"."""
+    if count >= 1024 * 1024:
+        return f"{count / (1024 * 1024):.1f} MB".replace(".0 MB", " MB")
+    return f"{max(1, round(count / 1024))} KB"
 
 
 def arena_sent_text(result, package):
@@ -585,24 +598,64 @@ class ArenaExportWindow:
         self.progress = queue.Queue()
         store = self.store
         cancel_event, progress = self.cancel_event, self.progress
-        cache_dir = os.path.join(self.app.image_cache_dir, "print_png")
+        image_root = self.app.image_cache_dir
+        cache_dir = os.path.join(image_root, "print_png")
         export_deck = check.export_deck
         tokens = check.parts.tokens
+        # What pictures Arena takes is its rules' to say: the light JPEG and art
+        # crops from an Arena that takes them, PNGs and no crops otherwise.
+        rules_format = getattr(self.rules, "format", None)
+        light = rules_format is not None and "jpeg" in rules_format.picture_formats
+        crops = rules_format is not None and rules_format.art_crops
+        light_dir = os.path.join(image_root, LIGHT_DIRECTORY)
+        crop_dir = os.path.join(image_root, CROP_DIRECTORY)
 
         def job():
             def report(stage, current, total, detail):
                 progress.put((stage, current, total))
+
+            def uploaded(sent, total):
+                progress.put(("send", sent, total))
+
             text = deck_to_text(export_deck, include_side=False, tokens=tokens)
             package_job = ArenaExportJob.from_deck(
                 export_deck, text, cache_dir, token_cards=[card for card, _qty in tokens])
             token = store.token()
-            package = build_package(
-                package_job, ensure_png, progress_cb=report, cancel_event=cancel_event,
-                back_faces_of=back_faces, ensure_face=ensure_face_png,
-                known_pictures=lambda hashes: fetch_known_pictures(link.address, token, hashes))
-            progress.put(("send", 1, 1))
-            # The name typed here names the Arena copy only; the deck here keeps its own.
-            result = send_deck(link.address, token, package.data, package.filename, name=name)
+            fingerprints = PictureFingerprints(os.path.join(image_root, FINGERPRINTS_FILE))
+
+            def known(hashes):
+                try:
+                    return fetch_known_pictures(link.address, token, hashes)
+                except ArenaLinkRefused:
+                    raise ArenaExportStopped() from None
+
+            def pack(known_pictures):
+                return build_package(
+                    package_job, ensure_png, progress_cb=report, cancel_event=cancel_event,
+                    back_faces_of=back_faces, ensure_face=ensure_face_png,
+                    known_pictures=known_pictures,
+                    prepare_picture=(lambda path: light_jpeg(path, light_dir)) if light else None,
+                    ensure_crop=(lambda card, face: ensure_art_crop(
+                        card, face, crop_dir, cancel_event=cancel_event)) if crops else None,
+                    fingerprint=fingerprints)
+
+            def send(package):
+                # The name typed here names the Arena copy only; the deck here keeps its own.
+                return send_deck(link.address, token, package.data, package.filename, name=name,
+                                 progress=uploaded)
+
+            try:
+                package = pack(known)
+            except ArenaExportStopped:
+                return None, SendResult(UNAUTHORIZED)
+            finally:
+                fingerprints.save()
+            result = send(package)
+            if result.code == "PICTURE_NOT_HELD" and package.held_count:
+                # A deck holding pictures it named was deleted since Arena was
+                # asked: send again, every picture this time.
+                package = pack(None)
+                result = send(package)
             return package, result
 
         self._render()
@@ -635,9 +688,11 @@ class ArenaExportWindow:
             self._render()
             return
         package, result = outcome
-        log.info("Proxic Arena send: %s (%s), %d pictures, %d held, %d token pictures",
-                 result.status, result.deck_name, package.image_count,
-                 package.held_count, package.token_pictures)
+        if package is not None:
+            log.info("Proxic Arena send: %s (%s), %d pictures, %d held, %d token pictures, "
+                     "%d art crops, %d bytes", result.status, result.deck_name,
+                     package.image_count, package.held_count, package.token_pictures,
+                     package.crop_count, len(package.data))
         if result.status == SENT:
             self.phase = "sent"
             self.banner = (OK, arena_sent_text(result, package))
@@ -659,6 +714,9 @@ class ArenaExportWindow:
             self.banner = (BAD, "Proxic Arena no longer accepts this computer's link (it "
                            "was removed on Arena), so it was unlinked here. Link it again "
                            "to send.")
+        elif result.detail:
+            # Refused on the way, before Arena could answer: said as it is.
+            self.banner = (BAD, result.detail)
         else:
             self.banner = (BAD, "Proxic Arena couldn't be reached. Check your connection "
                            "and try again.")
@@ -910,7 +968,9 @@ class ArenaExportWindow:
             elif stage == "package":
                 text = "Packing the deck…"
             else:
-                text = "Sending the deck to your Deck Depot…"
+                text = (f"Sending the deck to your Deck Depot ({_size(current)} of "
+                        f"{_size(total)})…")
+                # ARN-005: once the upload starts Arena could already be importing.
                 self.cancel_button.state(["disabled"])
             self.progress_label.configure(text=text)
             self.progress_bar.configure(maximum=max(total, 1), value=current)

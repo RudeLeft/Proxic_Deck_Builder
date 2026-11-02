@@ -109,6 +109,7 @@ mtgdb/
     sync.py              #   Scryfall + Wizards taxonomy sync; DatabaseSyncService/Controller (Tk-free)
   arena/                 # Proxic Arena send domain (Tk-free)
     export.py            #   card-art filenames, one-image-per-name, the in-memory package
+    pictures.py          #   the forms pictures go to Arena in: light JPEGs, art crops, remembered fingerprints
     connection.py        #   the link, its sealed token, the deck rules, deck names, known pictures, sending a deck
   comparison/            # comparison domain (Tk-free)
     models.py            #   ComparisonCollection, enforced limits, normalization
@@ -177,7 +178,7 @@ which dependency directions are legal.
 | Card preview & images | `mtgdb/ui/card_detail.py`, `mtgdb/ui/styles.py`, `mtgdb/ui/tokens.py` | `mtgdb/images/service.py`, `mtgdb/core/cache_names.py`, `mtgdb/core/net.py`, `mtgdb/database/constants.py`, `mtgdb/deck/legality.py` |
 | Deck editing | `mtgdb/ui/deck.py`, `mtgdb/ui/tables.py`, `mtgdb/ui/search.py`, `mtgdb/ui/search_checklist.py`, `mtgdb/ui/comparison_controls.py` | `mtgdb/deck/model.py`, `mtgdb/deck/sessions.py` |
 | Deck file open/save/import/export | `mtgdb/ui/deck_files.py`, `mtgdb/ui/set_filters.py` | `mtgdb/deck/io.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/arena_support.py`, `mtgdb/database/db.py`, `mtgdb/database/queries.py`, `mtgdb/database/taxonomy.py` |
-| Proxic Arena export | `mtgdb/ui/arena_export.py`, `mtgdb/ui/arena_connection.py`, `mtgdb/ui/app.py` | `mtgdb/arena/export.py`, `mtgdb/arena/connection.py`, `mtgdb/core/secret_store.py`, `mtgdb/deck/arena_check.py`, `mtgdb/deck/arena_support.py`, `mtgdb/deck/arena_limits.py`, `mtgdb/deck/arena_tokens.py`, `mtgdb/deck/arena_printings.py`, `mtgdb/database/queries.py`, `mtgdb/printing/service.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/io.py` |
+| Proxic Arena export | `mtgdb/ui/arena_export.py`, `mtgdb/ui/arena_connection.py`, `mtgdb/ui/app.py` | `mtgdb/arena/export.py`, `mtgdb/arena/pictures.py`, `mtgdb/arena/connection.py`, `mtgdb/core/secret_store.py`, `mtgdb/deck/arena_check.py`, `mtgdb/deck/arena_support.py`, `mtgdb/deck/arena_limits.py`, `mtgdb/deck/arena_tokens.py`, `mtgdb/deck/arena_printings.py`, `mtgdb/database/queries.py`, `mtgdb/printing/service.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/io.py` |
 | Deck statistics | `mtgdb/ui/deck_stats.py`, `mtgdb/ui/comparison.py`, `mtgdb/ui/comparison_controls.py` | `mtgdb/deck/analysis.py`, `mtgdb/deck/legality.py` |
 | Comparison | `mtgdb/ui/comparison.py`, `mtgdb/ui/comparison_controls.py`, `mtgdb/ui/deck.py`, `mtgdb/ui/deck_stats.py` | `mtgdb/comparison/models.py`, `mtgdb/images/service.py` |
 | Printing | `mtgdb/ui/printing.py` | `mtgdb/printing/service.py`, `mtgdb/printing/renderer.py`, `mtgdb/core/background_jobs.py`, `mtgdb/core/cache_names.py`, `mtgdb/core/net.py` |
@@ -234,6 +235,7 @@ only in the module that owns X.
 | `mtgdb/deck/arena_printings.py` | Deciding whether Proxic Arena accepts a card's printing by its rules, and which printing it has to send instead: same set first, then the first in Arena's order Scryfall can picture, else the name alone |
 | `mtgdb/deck/arena_check.py` | One detached deck checked against Arena's rules for the export window: its parts, the printings it goes in, its limits, unplayable cards and token pictures, and whether Arena would refuse it |
 | `mtgdb/arena/export.py` | Proxic Arena package contents: the art filename Arena indexes, one image per distinct card name and token, the pictures Arena already holds left out, and the zip built in memory |
+| `mtgdb/arena/pictures.py` | The pictures a deck sends to Proxic Arena in the forms its deck rules ask for: the light JPEG of each print PNG, each picture's art crop, both cached beside the print PNGs, and remembered picture fingerprints |
 | `mtgdb/arena/connection.py` | This computer's link to a Proxic Arena: the Arena address rule, trading a one-time code for a device token, keeping the link and its sealed token, downloading the deck rules and choosing between the fresh, saved and built-in copies, reading the player's deck names, asking which pictures Arena holds, and sending a deck |
 | `mtgdb/database/authorities.py` | Declarative registry of upstream Scryfall catalogs the application understands, their semantic roles, subtype applicability, and compatibility metadata keys; never value whitelists |
 | `mtgdb/database/constants.py` | Shared database/search semantics: colors, trusted content classes, known/playable legality statuses, known layout classes, and preferred rarity display order |
@@ -321,6 +323,7 @@ have at least two routing examples.
 | `mtgdb/deck/arena_printings.py` | change which printing a Proxic Arena send uses when Arena lacks the deck's own<br>change how a card's set code and collector number are checked against the printings Arena has | `mtgdb/ui/arena_export.py`; `mtgdb/deck/arena_support.py`; `mtgdb/database/queries.py` | Choosing only, and only for the export: the asset belongs to arena support, the card database is read through an injected lookup, the swap list's wording belongs to the Arena export UI, and the saved deck is never changed. |
 | `mtgdb/deck/arena_check.py` | change what the export window measures about a deck<br>change which problems keep a deck from being sent | `mtgdb/ui/arena_export.py`; `mtgdb/deck/arena_limits.py`; `mtgdb/deck/arena_tokens.py`; `mtgdb/deck/arena_printings.py` | Gathering only: each measurement belongs to its own module, and the words to the export window. |
 | `mtgdb/arena/export.py` | change the art filename Proxic Arena looks up or which printing supplies one name's image<br>change what the package holds or which pictures are left out of it | `mtgdb/ui/arena_export.py`; `mtgdb/printing/service.py`; `mtgdb/deck/model.py` | The card-art download, its cache and its HTTP policy stay in printing and are injected here; this owns naming and packaging only. |
+| `mtgdb/arena/pictures.py` | change the form a picture is sent to Proxic Arena in (its JPEG quality, its corners)<br>change where an art crop comes from or how sent pictures are fingerprinted | `mtgdb/ui/arena_export.py`; `mtgdb/printing/service.py`; `mtgdb/core/cache_names.py` | Picture preparation only: which pictures a deck sends and how they are packed belong to `arena/export.py`; the download, its validation and its HTTP policy stay in printing. |
 | `mtgdb/arena/connection.py` | change how this computer links to Proxic Arena or stores its device token<br>change when the deck rules are downloaded or which saved copy the check falls back to<br>change how a deck is sent or how Arena's answer to a send is read | `mtgdb/ui/arena_connection.py`; `mtgdb/ui/arena_export.py`; `mtgdb/core/secret_store.py` | Transport and storage only: it reads no rule (the caller passes the check), draws nothing, and never follows a redirect with the token. |
 | `mtgdb/database/authorities.py` | change which Scryfall catalogs/concepts this build understands<br>change subtype-family applicability or compatibility metadata keys | `mtgdb/database/sync.py`; `mtgdb/database/taxonomy.py`; `mtgdb/database/schema.py` | Registry entries describe authority semantics only; never add Card Type/Subtype/Mechanic values here and never auto-interpret an unknown endpoint. |
 | `mtgdb/database/constants.py` | change color/content/layout vocabulary<br>change known/playable-legality semantics or preferred rarity ordering | `mtgdb/database/search_queries.py`; `mtgdb/database/taxonomy.py`; `mtgdb/database/semantics.py`; `mtgdb/deck/legality.py` | Do not hardcode allowed Card Types, Supertypes, set groupings, Subtypes, Mechanics, Formats, Sets, Set Types, or Rarity membership here. Familiar rarity values MAY define display order only when unknown observed rarities remain accepted. |
@@ -390,6 +393,7 @@ rows override broader rows.
 | `mtgdb/search/*` | sibling search modules; `mtgdb.database.*`; `mtgdb.core.*` | `tkinter`; `mtgdb.ui.*` |
 | `mtgdb/deck/*` | sibling deck modules for delegation; `mtgdb.core.*` | `tkinter`; `sqlite3`; any `mtgdb.ui.*` |
 | `mtgdb/arena/export.py` | stdlib; `mtgdb.core.{atomic_files,background_jobs}` | `tkinter`; `sqlite3`; `mtgdb.core.net`; `mtgdb.printing.*`; `mtgdb.deck.*`; any `mtgdb.ui.*` |
+| `mtgdb/arena/pictures.py` | stdlib; `PIL`; `mtgdb.core.{cache_names,net,scryfall_json}`; `mtgdb.printing.service` | `tkinter`; `sqlite3`; `mtgdb.deck.*`; any `mtgdb.ui.*` |
 | `mtgdb/arena/connection.py` | stdlib; `mtgdb.core.{atomic_files,secret_store,version}` | `tkinter`; `sqlite3`; `mtgdb.core.net`; `mtgdb.deck.*`; `mtgdb.printing.*`; any `mtgdb.ui.*` |
 | `mtgdb/database/constants.py` | stdlib only | `tkinter`; `mtgdb.search.*`; `mtgdb.ui.*`; `mtgdb.core.net` |
 | `mtgdb/database/db.py` | `mtgdb.database.{schema,queries,search_queries,taxonomy,semantics,bulk_import}` | `tkinter`; `mtgdb.core.net`; `mtgdb.search.*`; `mtgdb.ui.*` |
@@ -1296,7 +1300,7 @@ every feature together and is exempt.
 - **ARN-007 — MUST:** Keep **Send to Arena** off while Proxic Arena's import
   would refuse the deck, by the limits in Arena's own deck rules (DECK-012),
   never numbers kept here: a main deck smaller than its smallest or larger than
-  its largest (60 to 65 cards today), more than its copy limit of one card name
+  its largest (60 to 100 cards today; 65 before Arena 1.28.0), more than its copy limit of one card name
   (4 today) with only the basic lands it lists exempt -- a card whose text
   allows any number, such as Relentless Rats, is held to the limit as Arena
   holds it -- a Contraption or Attraction side deck holding some cards but fewer
@@ -1427,7 +1431,17 @@ every feature together and is exempt.
   MUST each be told in plain words. Before packing, the send MUST ask Arena
   which of the deck's pictures the player's decks already hold and leave those
   out, naming them by SHA-256 in `pictures.json`, so a big deck stays under the
-  upload limit; when that question fails, every picture is sent.
+  upload limit; when that question fails, every picture is sent. The question
+  MUST go in batches every Arena answers (200 hashes), and Arena refusing the
+  token there MUST stop the send before the deck is packed. Pictures MUST be
+  stored in the zip, never compressed again, and every member MUST carry one
+  fixed time, so the same deck makes the same package and Arena can say it
+  already holds it. The upload MUST stream the package from one copy in memory
+  and show its bytes as they go. When Arena answers that a picture the package
+  named is no longer held (a deck deleted since it was asked), the send MUST go
+  once more with every picture. A refusal that is not Arena's own answer (a
+  proxy's or gateway's page, such as an upload too large for the connection)
+  MUST be told in plain words, with the package's size when it is too large.
   `arena/connection.py` owns the requests and `arena/export.py` the package.
   _Verification:_ **AUTO**.
 - **ARN-015 — MUST NOT:** Know anything of the game engine Proxic Arena runs
@@ -1445,6 +1459,20 @@ every feature together and is exempt.
   behave as they would without it: the board headings count every card, token
   cards included, and sort them like any other row. Wizards' MTG Arena, a
   different game, is unaffected (the Paper / Arena / MTGO printing filter).
+  _Verification:_ **AUTO**.
+- **ARN-017 — MUST:** Send pictures in the forms the linked Arena's deck rules
+  ask for, and only those (Arena spec 0051, owner 2026-11-01). The rules'
+  `format.pictures` names the picture formats Arena takes and whether it takes
+  art crops; rules that do not say mean PNGs and no crops (an Arena before
+  1.28.0). When Arena takes JPEGs, each print PNG MUST go as its full-size 88%
+  JPEG with its see-through corners filled in the card's border colour, made
+  once into the image cache and remade only when the PNG is newer; printing
+  MUST keep using the PNGs. When Arena takes art crops, each picture sent (a
+  front, a back face, a token) MUST bring Scryfall's art crop of that face under
+  `art_crops/`, named as its picture is; a picture without one goes without.
+  Every picture download MUST hear Cancel, mid-transfer included, and a
+  picture's SHA-256 MUST be remembered by file, size and time for the next
+  send. `arena/pictures.py` owns the forms, `arena/export.py` what is packed.
   _Verification:_ **AUTO**.
 - **DECK-011 — MUST:** Apply deck-construction checks only for explicitly
   verified format profiles. Current Brawl and Competitive Brawl MUST use exactly

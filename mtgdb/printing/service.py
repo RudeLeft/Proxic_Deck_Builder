@@ -202,7 +202,13 @@ def _download_png(url, path, name, http=net, cancel_event=None):
     temporary_path = path + ".download"
     try:
         _check_cancel(cancel_event)
-        http.download(url, temporary_path)
+        if cancel_event is None:
+            http.download(url, temporary_path)
+        else:
+            # Cancel reaches a picture mid-download: the transfer reports its
+            # progress every chunk or so, and a cancelled job stops it there.
+            http.download(url, temporary_path,
+                          progress_cb=lambda *_progress: _check_cancel(cancel_event))
         _check_cancel(cancel_event)
         if not _valid_png(temporary_path):
             raise ValueError(f"Downloaded image for {name} is invalid")
@@ -239,6 +245,15 @@ def ensure_face_png(card, face_index, cache_dir, http=net, cancel_event=None):
     return _download_png(
         url, path, name or card.get("name", "this card"), http=http,
         cancel_event=cancel_event)
+
+
+def download_validated_image(url, path, name, http=net, cancel_event=None):
+    """Return a validated image (PNG or JPEG) downloaded from ``url`` to ``path``.
+
+    The same cache-and-validate path the print PNGs take, for any Scryfall
+    image: a valid file already at ``path`` is reused, a corrupt one replaced.
+    """
+    return _download_png(url, path, name, http=http, cancel_event=cancel_event)
 
 
 class PrintTemplateService:

@@ -573,7 +573,9 @@ def _arena_shipped_rules_check():
         and "UGIN" not in support.set_codes
         and support.editions["UGF"][0] == "ugin"
         # The format, with the basic lands the only exemption.
-        and (rules_format.min_cards, rules_format.max_cards, rules_format.max_copies) == (60, 65, 4)
+        and (rules_format.min_cards, rules_format.max_cards, rules_format.max_copies) == (60, 100, 4)
+        # Arena 1.28.0 (its spec 0051): light JPEG pictures and art crops.
+        and rules_format.picture_formats == {"png", "jpeg"} and rules_format.art_crops
         and {"plains", "island", "snow_covered_forest"} <= rules_format.unlimited
         and "relentless_rats" not in rules_format.unlimited
         and rules_format.side_decks.get("CONTRAPTIONS") == (15, 1)

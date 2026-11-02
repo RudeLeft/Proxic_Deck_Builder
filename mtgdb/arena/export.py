@@ -6,8 +6,14 @@ memory and sent straight to the player's Deck Depot by ``arena/connection.py``
 (Arena spec 0022). Nothing is saved to disk: there is no zip to keep (ARN-014).
 
     <DeckName>.txt
-    real_cards/<Card Name> [SET].png
+    real_cards/<Card Name> [SET].png   (or .jpg, when Arena takes JPEGs)
+    art_crops/<Card Name> [SET].jpg    (when Arena takes art crops)
     pictures.json          (only when some pictures were left out, see below)
+
+What Arena takes is its deck rules' to say (`ArenaFormat.picture_formats`,
+`art_crops`); `arena/pictures.py` makes the light JPEG and fetches the crop.
+Pictures are stored in the zip, not compressed, and every member carries one
+fixed time, so the same deck sent twice is the same package.
 
 The names follow Arena's own rule: the trailing `[SET]` is stripped and what
 remains is matched against the card name, lowercased, with no accent folding.
@@ -54,8 +60,18 @@ class ArenaExportCancelled(JobCancelled):
     """Raised when the user cancels a send (BGJ-004: one catchable base)."""
 
 
+class ArenaExportStopped(Exception):
+    """Raised by a caller's question to Arena to stop a send before it is packed.
+
+    Arena refusing this computer's link is the one case: packing a deck it
+    will refuse anyway only wastes the player's time.
+    """
+
+
 # Where Arena's package files card pictures.
 REAL_ART_DIRECTORY = "real_cards"
+# Where it files each picture's art crop (Arena spec 0051).
+CROP_DIRECTORY = "art_crops"
 # Names the pictures a package leaves out because Arena already holds them.
 PICTURES_MEMBER = "pictures.json"
 
@@ -105,6 +121,8 @@ class ArenaPackage:
     back_face_count: int = 0
     # Token cards in the Tokens section that bring a picture.
     token_pictures: int = 0
+    # Art crops sent or named with the pictures (Arena spec 0051).
+    crop_count: int = 0
 
 
 def front_face_name(name):
@@ -170,29 +188,53 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+# One fixed time for every member, so the same deck makes the same package
+# and Arena can say it already holds it (zip members otherwise carry the time
+# they were written).
+_FIXED_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def _member(name, compress):
+    info = zipfile.ZipInfo(name, date_time=_FIXED_TIME)
+    info.compress_type = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
+    return info
+
+
 def write_package(job, image_paths, held=(), cancel_event=None):
     """Return the package's bytes: the decklist, each picture not ``held``, and ``pictures.json``.
 
-    ``image_paths`` maps each `real_cards/...` member to a local PNG; ``held``
-    maps a member Arena already holds to its SHA-256, to name instead of send.
+    ``image_paths`` maps each `real_cards/...` or `art_crops/...` member to a
+    local picture; ``held`` maps a member Arena already holds to its SHA-256,
+    to name instead of send. Pictures are stored, not compressed: they are
+    compressed already, and squeezing them again only costs time.
     """
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{_safe_member(job.deck_name)}.txt", job.deck_text)
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(_member(f"{_safe_member(job.deck_name)}.txt", True), job.deck_text)
         held = dict(held)
         for member, source in image_paths.items():
             check_cancel(
                 cancel_event, "Sending was cancelled.", ArenaExportCancelled)
             if member not in held:
-                archive.write(source, member)
+                with open(source, "rb") as handle:
+                    archive.writestr(_member(member, False), handle.read())
         if held:
-            archive.writestr(PICTURES_MEMBER, json.dumps(held, sort_keys=True))
+            archive.writestr(
+                _member(PICTURES_MEMBER, True), json.dumps(held, sort_keys=True))
     return buffer.getvalue()
+
+
+def _sent_name(member_name, path):
+    """The member name with the extension of the file actually sent (``.png`` or ``.jpg``)."""
+    stem = member_name[:-len(".png")] if member_name.endswith(".png") else member_name
+    extension = os.path.splitext(path)[1].casefold() or ".png"
+    return f"{stem}{extension}"
 
 
 def build_package(
         job, ensure_image, progress_cb=None, cancel_event=None,
-        back_faces_of=None, ensure_face=None, known_pictures=None):
+        back_faces_of=None, ensure_face=None, known_pictures=None,
+        prepare_picture=None, ensure_crop=None, fingerprint=None):
     """Download each picture, ask which Arena holds, then pack the rest.
 
     `ensure_image` is injected rather than imported so this module states what
@@ -204,7 +246,15 @@ def build_package(
     over and where a face's image lives stay with the owner of face handling.
     Without both, only front faces are bundled. `known_pictures(hashes)`
     returns the hashes Arena already holds; without it, or when it fails,
-    every picture is sent.
+    every picture is sent -- except when it raises ``ArenaExportStopped``,
+    which stops the send (the link was removed).
+
+    What Arena's deck rules ask for is injected too (`arena/pictures.py`):
+    `prepare_picture(path)` turns a PNG into the file to send (the light
+    JPEG), `ensure_crop(card, face_index)` returns a picture's art crop or
+    None, and `fingerprint(path)` its SHA-256. Each is optional; without them
+    the PNGs go as they are, with no crops. Every download is told about
+    `cancel_event`, so Cancel stops a picture mid-download.
     """
     # One unit per image: each card's front, then its back faces, then each
     # token card. A back face is filed under its own name but carries the
@@ -223,6 +273,7 @@ def build_package(
     missing = []
     back_faces = 0
     token_pictures = 0
+    crops = 0
     for index, (card, face_index, art_card, is_token) in enumerate(units, 1):
         check_cancel(
             cancel_event, "Sending was cancelled.", ArenaExportCancelled)
@@ -233,20 +284,29 @@ def build_package(
         if member_name:
             try:
                 path = (
-                    ensure_image(card, job.cache_dir) if face_index is None
-                    else ensure_face(card, face_index, job.cache_dir))
+                    ensure_image(card, job.cache_dir, cancel_event=cancel_event)
+                    if face_index is None
+                    else ensure_face(card, face_index, job.cache_dir, cancel_event=cancel_event))
+                if path and prepare_picture:
+                    path = prepare_picture(path)
+            except JobCancelled:
+                raise ArenaExportCancelled("Sending was cancelled.") from None
             except Exception:
                 path = None
-        member = f"{REAL_ART_DIRECTORY}/{member_name}"
         if path and os.path.exists(path):
+            member = f"{REAL_ART_DIRECTORY}/{_sent_name(member_name, path)}"
             # A name already filed keeps its first image: Arena's index is
             # keyed by name, so a second one could only overwrite it.
-            if member not in image_paths:
+            if not any(_same_name(member, filed) for filed in image_paths):
                 image_paths[member] = path
                 if face_index is not None:
                     back_faces += 1
                 if is_token:
                     token_pictures += 1
+                crop = _crop_for(ensure_crop, card, face_index, cancel_event)
+                if crop:
+                    image_paths[f"{CROP_DIRECTORY}/{_sent_name(member_name, crop)}"] = crop
+                    crops += 1
         elif not is_token:
             # A card whose art cannot be fetched MUST NOT fail the send: the
             # deck is still worth having, and Arena draws its own card for it.
@@ -256,9 +316,14 @@ def build_package(
 
     held = {}
     if known_pictures and image_paths:
-        hashes = {member: _sha256(path) for member, path in image_paths.items()}
+        check_cancel(
+            cancel_event, "Sending was cancelled.", ArenaExportCancelled)
+        sha_of = fingerprint or _sha256
+        hashes = {member: sha_of(path) for member, path in image_paths.items()}
         try:
             known = set(known_pictures(sorted(set(hashes.values()))) or ())
+        except ArenaExportStopped:
+            raise
         except Exception:
             known = set()
         held = {member: sha for member, sha in hashes.items() if sha in known}
@@ -266,8 +331,30 @@ def build_package(
     if progress_cb:
         progress_cb("package", total, total, package_filename(job.deck_name))
     data = write_package(job, image_paths, held, cancel_event=cancel_event)
+    pictures = len(image_paths) - crops
     return ArenaPackage(
         data=data, filename=package_filename(job.deck_name),
-        card_count=len(job.cards), image_count=len(image_paths),
-        held_count=len(held), missing_art=tuple(missing),
-        back_face_count=back_faces, token_pictures=token_pictures)
+        card_count=len(job.cards), image_count=pictures,
+        held_count=sum(1 for member in held if member.startswith(f"{REAL_ART_DIRECTORY}/")),
+        missing_art=tuple(missing),
+        back_face_count=back_faces, token_pictures=token_pictures, crop_count=crops)
+
+
+def _same_name(member, filed):
+    """Whether two `real_cards/` members name one picture (``.png`` or ``.jpg`` alike)."""
+    return (filed.startswith(f"{REAL_ART_DIRECTORY}/")
+            and os.path.splitext(filed)[0] == os.path.splitext(member)[0])
+
+
+def _crop_for(ensure_crop, card, face_index, cancel_event):
+    """A picture's art crop when the caller fetches them, else None; a failure is only no crop."""
+    if not ensure_crop:
+        return None
+    try:
+        crop = ensure_crop(card, face_index)
+    except JobCancelled:
+        raise ArenaExportCancelled("Sending was cancelled.") from None
+    except Exception:
+        return None
+    check_cancel(cancel_event, "Sending was cancelled.", ArenaExportCancelled)
+    return crop if crop and os.path.exists(crop) else None

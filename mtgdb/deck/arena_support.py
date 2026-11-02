@@ -82,7 +82,10 @@ class ArenaFormat:
     basic lands, and only those). ``side_decks`` maps a side deck's name
     (``CONTRAPTIONS``, ``ATTRACTIONS``) to ``(fewest cards, copies of each)``,
     and ``sections`` maps a card's key to the side deck it goes to; such a card
-    is not in the main deck's count.
+    is not in the main deck's count. ``picture_formats`` are the picture files
+    a package may carry (``png``, and ``jpeg`` from Arena 1.28.0) and
+    ``art_crops`` whether it takes each picture's art crop; an Arena that does
+    not say takes PNGs and no crops.
     """
 
     min_cards: int
@@ -91,6 +94,8 @@ class ArenaFormat:
     unlimited: frozenset = frozenset()
     side_decks: object = field(default_factory=_empty_mapping)
     sections: object = field(default_factory=_empty_mapping)
+    picture_formats: frozenset = frozenset({"png"})
+    art_crops: bool = False
 
 
 @dataclass(frozen=True)
@@ -226,7 +231,18 @@ def _format(raw, cards):
         unlimited=frozenset(
             normalize_card_name(name) for name in raw.get("unlimitedCopies") or ()),
         side_decks=MappingProxyType(sides),
-        sections=MappingProxyType(sections))
+        sections=MappingProxyType(sections),
+        **_pictures(raw.get("pictures")))
+
+
+def _pictures(raw):
+    """What pictures a package may carry; PNGs and no crops when Arena does not say."""
+    if not isinstance(raw, dict):
+        return {}
+    formats = frozenset(
+        str(name).casefold() for name in raw.get("formats") or () if isinstance(name, str))
+    return {"picture_formats": formats or frozenset({"png"}),
+            "art_crops": raw.get("artCrops") is True}
 
 
 def unsupported_deck_names(deck, supported, boards=("main", "side")):

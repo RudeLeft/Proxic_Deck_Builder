@@ -264,5 +264,10 @@ def download(url, dest, progress_cb=None, retries=2):
             _discard_partial(dest, opened)
             if attempt >= attempts - 1:
                 raise
+        except Exception:
+            # A progress callback may stop the transfer (a cancelled job raises
+            # from it); the partial file is not left behind, and nothing retries.
+            _discard_partial(dest, opened)
+            raise
         time.sleep(0.8 * (2 ** attempt))
     return dest
