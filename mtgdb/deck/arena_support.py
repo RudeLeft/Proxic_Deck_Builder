@@ -85,7 +85,10 @@ class ArenaFormat:
     is not in the main deck's count. ``picture_formats`` are the picture files
     a package may carry (``png``, and ``jpeg`` from Arena 1.28.0) and
     ``art_crops`` whether it takes each picture's art crop; an Arena that does
-    not say takes PNGs and no crops.
+    not say takes PNGs and no crops. ``printing_pictures`` (Arena 1.32.0) is
+    whether it takes a picture of each printing of a card the deck holds in
+    more than one (``<Name> [SET-NUM]``); one that does not say takes one
+    picture per name.
     """
 
     min_cards: int
@@ -96,6 +99,7 @@ class ArenaFormat:
     sections: object = field(default_factory=_empty_mapping)
     picture_formats: frozenset = frozenset({"png"})
     art_crops: bool = False
+    printing_pictures: bool = False
 
 
 @dataclass(frozen=True)
@@ -242,7 +246,8 @@ def _pictures(raw):
     formats = frozenset(
         str(name).casefold() for name in raw.get("formats") or () if isinstance(name, str))
     return {"picture_formats": formats or frozenset({"png"}),
-            "art_crops": raw.get("artCrops") is True}
+            "art_crops": raw.get("artCrops") is True,
+            "printing_pictures": raw.get("printings") is True}
 
 
 def unsupported_deck_names(deck, supported, boards=("main", "side")):

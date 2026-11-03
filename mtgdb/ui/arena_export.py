@@ -607,6 +607,8 @@ class ArenaExportWindow:
         rules_format = getattr(self.rules, "format", None)
         light = rules_format is not None and "jpeg" in rules_format.picture_formats
         crops = rules_format is not None and rules_format.art_crops
+        # And a picture of each other printing, from an Arena that takes them.
+        printings = rules_format is not None and rules_format.printing_pictures
         light_dir = os.path.join(image_root, LIGHT_DIRECTORY)
         crop_dir = os.path.join(image_root, CROP_DIRECTORY)
 
@@ -619,7 +621,8 @@ class ArenaExportWindow:
 
             text = deck_to_text(export_deck, include_side=False, tokens=tokens)
             package_job = ArenaExportJob.from_deck(
-                export_deck, text, cache_dir, token_cards=[card for card, _qty in tokens])
+                export_deck, text, cache_dir, token_cards=[card for card, _qty in tokens],
+                printings=printings)
             token = store.token()
             fingerprints = PictureFingerprints(os.path.join(image_root, FINGERPRINTS_FILE))
 

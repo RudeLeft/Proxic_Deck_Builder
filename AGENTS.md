@@ -234,7 +234,7 @@ only in the module that owns X.
 | `mtgdb/deck/arena_tokens.py` | Dividing a deck into its cards, its token cards (sent as pictures) and its emblems and art cards (left out); finding which tokens the deck's cards make, from Scryfall related parts, and which have no token card in the deck |
 | `mtgdb/deck/arena_printings.py` | Deciding whether Proxic Arena accepts a card's printing by its rules, and which printing it has to send instead: same set first, then the first in Arena's order Scryfall can picture, else the name alone |
 | `mtgdb/deck/arena_check.py` | One detached deck checked against Arena's rules for the export window: its parts, the printings it goes in, its limits, unplayable cards and token pictures, and whether Arena would refuse it |
-| `mtgdb/arena/export.py` | Proxic Arena package contents: the art filename Arena indexes, one image per distinct card name and token, the pictures Arena already holds left out, and the zip built in memory |
+| `mtgdb/arena/export.py` | Proxic Arena package contents: the art filename Arena indexes, one image per distinct card name and token (and each other printing, ARN-018), the pictures Arena already holds left out, and the zip built in memory |
 | `mtgdb/arena/pictures.py` | The pictures a deck sends to Proxic Arena in the forms its deck rules ask for: the light JPEG of each print PNG, each picture's art crop, both cached beside the print PNGs, and remembered picture fingerprints |
 | `mtgdb/arena/connection.py` | This computer's link to a Proxic Arena: the Arena address rule, trading a one-time code for a device token, keeping the link and its sealed token, downloading the deck rules and choosing between the fresh, saved and built-in copies, reading the player's deck names, asking which pictures Arena holds, and sending a deck |
 | `mtgdb/database/authorities.py` | Declarative registry of upstream Scryfall catalogs the application understands, their semantic roles, subtype applicability, and compatibility metadata keys; never value whitelists |
@@ -1246,10 +1246,10 @@ every feature together and is exempt.
   suffix and matches what remains against the card name, case-folded and with
   NO accent folding, so accents MUST be preserved exactly as printed and only
   characters a filesystem refuses MUST be removed. A stored multi-face name MUST
-  be filed under its FRONT face. Because Arena keys a picture by name alone, two
-  printings of one name could only collide, so the package MUST carry exactly
-  ONE image per distinct card name -- the deck's own first printing of that
-  name, which is the copy the player is holding. A card that turns over
+  be filed under its FRONT face. Arena keys a picture by name, so the package
+  MUST carry exactly ONE image per distinct card name -- the deck's own first
+  printing of that name -- plus, only for an Arena that takes them, a picture
+  of each other printing (ARN-018). A card that turns over
   (transform, modal double-faced, battle: any card with an image on each face)
   MUST also carry its back face, named by that face's own name and the front's
   set code in the same shape, because Arena maps an image to a face by that
@@ -1474,6 +1474,16 @@ every feature together and is exempt.
   picture's SHA-256 MUST be remembered by file, size and time for the next
   send. `arena/pictures.py` owns the forms, `arena/export.py` what is packed.
   _Verification:_ **AUTO**.
+- **ARN-018 — MUST:** Give each printing of a card its own picture on an Arena
+  that takes them (Arena spec 0053, owner 2026-11-03): when the rules'
+  `format.pictures.printings` is true, every main-deck printing of a name after
+  the deck's first MUST go as `<Card Name> [SET-NUM]` (the collector number
+  after the set code's `-`, filesystem-refused characters removed), with its art
+  crop when crops go, so a deck holding four Mountain printings shows four
+  Mountains. The first printing stays the name's picture; a name held in one
+  printing adds nothing; a missing printing picture is not missing art (the
+  line wears its name's). Rules that do not say mean one picture per name.
+  `arena/export.py` owns it. _Verification:_ **AUTO**.
 - **DECK-011 — MUST:** Apply deck-construction checks only for explicitly
   verified format profiles. Current Brawl and Competitive Brawl MUST use exactly
   100 cards, singleton construction, and no sideboard; Commander/Commander 1v1

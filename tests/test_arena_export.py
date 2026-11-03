@@ -97,7 +97,8 @@ def _members(package):
 def _package(deck, cache, tokens=(), **options):
     parts_text = deck_to_text(deck, include_side=False, tokens=tokens)
     job = ArenaExportJob.from_deck(
-        deck, parts_text, cache, token_cards=[card for card, _qty in tokens])
+        deck, parts_text, cache, token_cards=[card for card, _qty in tokens],
+        printings=options.pop("printings", False))
     return build_package(job, options.pop("ensure", _stub_downloader()), **options)
 
 
@@ -930,6 +931,55 @@ def _jpeg_and_crops_package_check():
         and plain.crop_count == 0)
 
 
+def _printing_pictures_check():
+    """ARN-018: each other printing of a name gets its own picture and crop, when Arena takes them."""
+    from mtgdb.arena.export import printing_filename
+    from mtgdb.deck.arena_support import _format
+    deck = Deck("Goblins", "modern")
+    deck.add(_card("m59", "Mountain", "dd1", number="59"), "main", 5)
+    deck.add(_card("m60", "Mountain", "dd1", number="60"), "main", 6)
+    deck.add(_card("m61", "Mountain", "dd1", number="61"), "main", 6)
+    deck.add(_card("m62", "Mountain", "dd1", number="62"), "main", 5)
+    deck.add(_card("bolt", "Lightning Bolt", "lea"), "main", 4)
+    deck.add(_card("side", "Mountain", "dd1", number="63"), "side", 1)
+
+    def crop(card, face_index):
+        path = pathlib.Path(tempfile.gettempdir()) / f"crop-{card['id']}.jpg"
+        path.write_bytes(b"\xff\xd8\xff" + card["id"].encode())
+        return str(path)
+
+    with tempfile.TemporaryDirectory() as directory:
+        cache = pathlib.Path(directory)
+        printings = _package(deck, cache, printings=True, ensure_crop=crop)
+        names = _package(deck, cache, ensure_crop=crop)
+    sent = sorted(name for name in _members(printings) if not name.endswith(".txt"))
+    told = _format({"minCards": 60, "maxCards": 100, "maxCopies": 4,
+                    "pictures": {"formats": ["png"], "printings": True}}, [])
+    silent = _format({"minCards": 60, "maxCards": 100, "maxCopies": 4,
+                      "pictures": {"formats": ["png"]}}, [])
+    return (
+        sent == [
+            "art_crops/Lightning Bolt [LEA].jpg", "art_crops/Mountain [DD1-60].jpg",
+            "art_crops/Mountain [DD1-61].jpg", "art_crops/Mountain [DD1-62].jpg",
+            "art_crops/Mountain [DD1].jpg",
+            f"{REAL_ART_DIRECTORY}/Lightning Bolt [LEA].png",
+            f"{REAL_ART_DIRECTORY}/Mountain [DD1-60].png",
+            f"{REAL_ART_DIRECTORY}/Mountain [DD1-61].png",
+            f"{REAL_ART_DIRECTORY}/Mountain [DD1-62].png",
+            f"{REAL_ART_DIRECTORY}/Mountain [DD1].png"]
+        and (printings.image_count, printings.crop_count) == (5, 5)
+        and printings.token_pictures == 0 and printings.missing_art == ()
+        # Each printing picture is still the card's name by Arena's name rule.
+        and {_arena_index_key(name) for name in sent} == {"mountain", "lightning bolt"}
+        # An Arena that does not take them gets one picture per name, as before.
+        and sorted(name for name in _members(names) if name.startswith(REAL_ART_DIRECTORY)) == [
+            f"{REAL_ART_DIRECTORY}/Lightning Bolt [LEA].png",
+            f"{REAL_ART_DIRECTORY}/Mountain [DD1].png"]
+        and told.printing_pictures is True and silent.printing_pictures is False
+        and printing_filename(_card("x", "Fire // Ice", "apc", number="128")) == "Fire [APC-128].png"
+        and printing_filename(_card("y", "Nameless", "tst", number="")) is None)
+
+
 def _fingerprints_check():
     """ARN-017: a picture's SHA-256 is remembered by file, size and time, and kept for the next send."""
     from mtgdb.arena.pictures import PictureFingerprints
@@ -1043,6 +1093,8 @@ def main():
         "each picture's art crop is Scryfall's crop of that face": _art_crop_source_check(),
         "JPEGs and art crops when Arena takes them, stored, the same deck the same bytes":
             _jpeg_and_crops_package_check(),
+        "each other printing of a card goes as its own picture, when Arena takes them":
+            _printing_pictures_check(),
         "a picture's fingerprint is remembered for the next send": _fingerprints_check(),
         "what pictures go is Arena's rules' to say, and the window follows them":
             _rules_pictures_check(),

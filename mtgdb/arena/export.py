@@ -7,6 +7,7 @@ memory and sent straight to the player's Deck Depot by ``arena/connection.py``
 
     <DeckName>.txt
     real_cards/<Card Name> [SET].png   (or .jpg, when Arena takes JPEGs)
+    real_cards/<Card Name> [SET-NUM].png  (another printing of a name, see below)
     art_crops/<Card Name> [SET].jpg    (when Arena takes art crops)
     pictures.json          (only when some pictures were left out, see below)
 
@@ -18,9 +19,13 @@ fixed time, so the same deck sent twice is the same package.
 The names follow Arena's own rule: the trailing `[SET]` is stripped and what
 remains is matched against the card name, lowercased, with no accent folding.
 So accents are kept exactly as printed, and only characters a filesystem
-refuses are removed. Arena keys a picture by name alone, which means two
-printings of one name would collide, so this bundles ONE image per distinct
-card name rather than per printing.
+refuses are removed. Arena keys a picture by name, so this bundles ONE image
+per distinct card name: the deck's first printing of it. An Arena that takes
+printing pictures (Arena spec 0053, ``ArenaFormat.printing_pictures``) also
+gets each OTHER printing of a name the deck holds in more than one, as
+`<Card Name> [SET-NUM]` with its art crop, so four Mountain printings look
+like four Mountains; a deck with one printing per name sends the same as
+before.
 
 A card that turns over (transform, modal double-faced, battle) also bundles its
 back face, filed under that face's own name in the same shape, because Arena
@@ -79,6 +84,9 @@ PICTURES_MEMBER = "pictures.json"
 # deliberately NOT touched: Arena matches the name as printed, case-folded
 # only, so stripping accents here would make Eowyn's art unfindable.
 _ILLEGAL_FILENAME_CHARACTERS = '<>:"/\\|?*'
+# A build unit that is another printing of a name (Arena spec 0053): neither a
+# card's own picture nor a token's, and never reported as missing art.
+PRINTING = "printing"
 
 
 @dataclass(frozen=True)
@@ -94,15 +102,19 @@ class ArenaExportJob:
     cards: tuple[dict, ...]
     cache_dir: str
     token_cards: tuple[dict, ...] = ()
+    # The other printings of names held in more than one (Arena spec 0053).
+    printing_cards: tuple[dict, ...] = ()
 
     @classmethod
-    def from_deck(cls, deck, deck_text, cache_dir, token_cards=()):
+    def from_deck(cls, deck, deck_text, cache_dir, token_cards=(), printings=False):
         return cls(
             deck_name=str(getattr(deck, "name", "Deck") or "Deck"),
             deck_text=str(deck_text),
             cards=tuple(copy.deepcopy(distinct_art_cards(deck))),
             cache_dir=os.fspath(cache_dir),
-            token_cards=tuple(copy.deepcopy(list(token_cards))))
+            token_cards=tuple(copy.deepcopy(list(token_cards))),
+            printing_cards=tuple(copy.deepcopy(
+                other_printing_cards(deck) if printings else [])))
 
 
 @dataclass(frozen=True)
@@ -165,6 +177,45 @@ def distinct_art_cards(deck):
         if name and name not in seen:
             seen[name] = card
     return list(seen.values())
+
+
+def printing_filename(card):
+    """Return `<Card Name> [SET-NUM].png` for one printing (Arena spec 0053).
+
+    None without a name, set code or collector number: such a card can only
+    wear its name's picture. Arena splits set from number at the first ``-``,
+    which a set code never holds.
+    """
+    named = art_filename(card)
+    set_code = str((card or {}).get("set_code") or "").strip().upper()
+    number = "".join(
+        character for character in str((card or {}).get("collector_number") or "")
+        if character not in _ILLEGAL_FILENAME_CHARACTERS).strip()
+    if not named or not set_code or not number:
+        return None
+    return f"{named[:-len(f' [{set_code}].png')]} [{set_code}-{number}].png"
+
+
+def other_printing_cards(deck):
+    """Return each main-deck printing of a name after the deck's first, in deck order.
+
+    The first printing of a name is that name's picture
+    (`distinct_art_cards`); these are the rest, one per printing, so a name
+    held in one printing adds nothing.
+    """
+    first, others = {}, {}
+    for entry in deck.entries("main"):
+        card = entry.get("card") or {}
+        name = front_face_name(card.get("name")).casefold()
+        printing = (str(card.get("set_code") or "").casefold(),
+                    str(card.get("collector_number") or "").casefold())
+        if not name or not all(printing):
+            continue
+        if name not in first:
+            first[name] = printing
+        elif printing != first[name] and (name, printing) not in others:
+            others[(name, printing)] = card
+    return list(others.values())
 
 
 def package_filename(deck_name):
@@ -257,8 +308,8 @@ def build_package(
     `cancel_event`, so Cancel stops a picture mid-download.
     """
     # One unit per image: each card's front, then its back faces, then each
-    # token card. A back face is filed under its own name but carries the
-    # front's set code.
+    # other printing (Arena spec 0053), then each token card. A back face is
+    # filed under its own name but carries the front's set code.
     units = []
     for card in job.cards:
         units.append((card, None, card, False))
@@ -266,6 +317,8 @@ def build_package(
             for face_index, face_name in back_faces_of(card):
                 units.append((card, face_index, {
                     "name": face_name, "set_code": card.get("set_code")}, False))
+    for card in job.printing_cards:
+        units.append((card, None, card, PRINTING))
     for token in job.token_cards:
         units.append((token, None, token, True))
     total = len(units)
@@ -277,7 +330,8 @@ def build_package(
     for index, (card, face_index, art_card, is_token) in enumerate(units, 1):
         check_cancel(
             cancel_event, "Sending was cancelled.", ArenaExportCancelled)
-        member_name = art_filename(art_card)
+        member_name = (printing_filename(art_card) if is_token is PRINTING
+                       else art_filename(art_card))
         if progress_cb:
             progress_cb("download", index - 1, total, member_name or "")
         path = None
@@ -301,7 +355,7 @@ def build_package(
                 image_paths[member] = path
                 if face_index is not None:
                     back_faces += 1
-                if is_token:
+                if is_token is True:
                     token_pictures += 1
                 crop = _crop_for(ensure_crop, card, face_index, cancel_event)
                 if crop:
@@ -310,6 +364,7 @@ def build_package(
         elif not is_token:
             # A card whose art cannot be fetched MUST NOT fail the send: the
             # deck is still worth having, and Arena draws its own card for it.
+            # (An other printing is not missing: it wears its name's picture.)
             missing.append(front_face_name(art_card.get("name")) or "(unnamed)")
         if progress_cb:
             progress_cb("download", index, total, member_name or "")
