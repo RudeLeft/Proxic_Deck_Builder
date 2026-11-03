@@ -277,7 +277,7 @@ only in the module that owns X.
 | `mtgdb/ui/workspace.py` | Workspace/session coordination, detached Tk snapshot capture, retained Mainboard/Sideboard sash capture/restore, restored-result selection, autosave scheduling and writer shutdown/flush |
 | `mtgdb/ui/database_sync.py` | Refresh scheduling, progress-dialog presentation, Tk polling, completion reconciliation, error/shutdown adaptation |
 | `mtgdb/ui/printing.py` | Print destination selection, progress-dialog presentation, Tk polling, completion/error/shutdown adaptation |
-| `mtgdb/ui/mana.py` | Mana pip drawing, bundled symbol loading, fallback symbols, mana-cost Tk image composition and caches |
+| `mtgdb/ui/mana.py` | Mana pip drawing, bundled symbol loading, fallback symbols, mana-cost Tk image composition and caches; `resolve_symbol_key` (token to picture, an exact picture first) is Tk-free and also read by the weekly Scryfall audit |
 | `mtgdb/ui/updates.py` | `UpdateCheckMixin`: background GitHub release check and the update banner that downloads, verifies, stages, and restarts into a new release (or opens the releases page when run from source) |
 | `mtgdb/ui/window.py` | `WindowServicesMixin`: popup geometry, per-monitor visible work-area resolution, dark title bars, scrolling, icons, DPI, window behavior |
 
@@ -2623,7 +2623,18 @@ every feature together and is exempt.
   emitting a Markdown evidence report. The audit MUST also fail when fewer than
   99% of playable cards carry a print picture (PNG) and an art crop, the two
   pictures printing and the Proxic Arena send download, so a Scryfall image
-  change is found by the weekly check and not by a user. This rule governs the
+  change is found by the weekly check and not by a user. It MUST fail when a
+  card type carries subtypes that no app subtype list covers and that is not
+  one of `KNOWN_SUBTYPE_GROUPS_WITHOUT_LIST` (Plane, Emblem, Dungeon,
+  Conspiracy today), or when Scryfall has a `<type>-types` catalog for a card
+  type the app keeps no list for: either needs a new `SUBTYPE_AUTHORITIES`
+  entry. It MUST list, without failing, every mana symbol in a playable card's
+  cost that has no bundled picture (Scryfall's joke symbols excepted), using
+  the app's own `resolve_symbol_key`, so the list is what users see as a grey
+  circle. With `--previous` it MUST list what each kept list (card types,
+  supertypes, subtypes, keywords, sets, formats, rarities, set types, card
+  shapes, legality statuses, cost symbols) gained since that run, comparing
+  only lists both runs kept. This rule governs the
   script's contract only, which `tests/test_taxonomy_audit_contract.py` checks without network
   access. _Verification:_ **AUTO**.
 - **VER-013 — MUST:** Treat an actual full upstream taxonomy audit as evidence
@@ -2642,9 +2653,13 @@ every feature together and is exempt.
   engine Arena runs: what Arena plays is Arena's to publish (DECK-012, ARN-015),
   so an engine update on Arena needs no Deck Builder release. The workflow MUST NOT rewrite a source file or open a
   pull request: it reports. A passing run MUST say so in one plain line on its
-  run page (an Annotations notice and the run summary: "Nothing to do", with
-  how many printings and sets it checked), so a quiet week needs no report
-  opened; a failing run says "Needs attention" there too. A passing run MUST
+  run page (an Annotations notice and the run summary: "Nothing to do", or
+  "Something to look at" when a mana symbol has no picture, with how many
+  printings and sets it checked and what is new since the last passing run),
+  so a quiet week needs no report opened; a failing run says "Needs attention"
+  there too. Each run keeps its list of values as the
+  `scryfall-taxonomy-snapshot` artifact (90 days) and compares with the newest
+  passing run's. A passing run MUST
   close, with a comment, any alert issue an earlier failure left open. The
   audit MUST run on the Python version `build-windows.yml` builds the app with.
   _Verification:_ **AUTO**.

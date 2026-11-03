@@ -27,6 +27,47 @@ COLOR_ICON_FILES = {"W": "mana/sym_W.png", "U": "mana/sym_U.png",
                     "G": "mana/sym_G.png", "C": "mana/sym_C.png"}
 
 
+def bundled_symbol_keys():
+    """The symbol keys with a picture in ``assets/mana`` (``sym_<key>.png``)."""
+    try:
+        return {f[4:-4] for f in os.listdir(_asset_path("mana"))
+                if f.startswith("sym_") and f.endswith(".png")}
+    except OSError:
+        return set()
+
+
+def resolve_symbol_key(token, keys):
+    """Map a cost token (contents of {...}) to a bundled symbol key, or None.
+
+    ``None`` means the cost draws a grey fallback pip. The weekly Scryfall
+    audit uses this to list symbols that would (VER-009).
+    """
+    t = token.upper().strip()
+    if t in keys and (t.isdigit() or t in
+                      ("W", "U", "B", "R", "G", "C", "S",
+                       "X", "Y", "Z", "T")):
+        return t
+    if "/" in t:
+        # A picture of the exact symbol wins (G/W/P is GWP, not GP).
+        if t.replace("/", "") in keys:
+            return t.replace("/", "")
+        parts = [p for p in t.split("/") if p]
+        if "P" in parts:                      # Phyrexian, e.g. W/P, C/P
+            col = [p for p in parts if p != "P"]
+            if col and (col[0] + "P") in keys:
+                return col[0] + "P"
+        if "2" in parts:                      # twobrid, e.g. 2/W
+            col = [p for p in parts if p != "2"]
+            if col and ("2" + col[0]) in keys:
+                return "2" + col[0]
+        # Two-color hybrid (W/U) and colorless hybrid (C/W).
+        if len(parts) == 2 and all(p in "WUBRGC" for p in parts):
+            for key in (parts[0] + parts[1], parts[1] + parts[0]):
+                if key in keys:
+                    return key
+    return None
+
+
 class ManaSymbolsMixin:
     """Own mana pip and mana-cost image rendering used by the application UI."""
 
@@ -92,37 +133,12 @@ class ManaSymbolsMixin:
 
 
     def _load_symbol_keys(self):
-        self._sym_keys = set()
-        try:
-            for f in os.listdir(_asset_path("mana")):
-                if f.startswith("sym_") and f.endswith(".png"):
-                    self._sym_keys.add(f[4:-4])
-        except OSError:
-            pass
+        self._sym_keys = bundled_symbol_keys()
 
 
     def _resolve_symbol_key(self, token):
         """Map a cost token (contents of {...}) to an extracted symbol key."""
-        t = token.upper().strip()
-        if t in self._sym_keys and (t.isdigit() or t in
-                                    ("W", "U", "B", "R", "G", "C", "S",
-                                     "X", "Y", "Z", "T")):
-            return t
-        if "/" in t:
-            parts = [p for p in t.split("/") if p]
-            if "P" in parts:                      # Phyrexian, e.g. W/P
-                col = [p for p in parts if p != "P"]
-                if col and (col[0] + "P") in self._sym_keys:
-                    return col[0] + "P"
-            if "2" in parts:                      # twobrid, e.g. 2/W
-                col = [p for p in parts if p != "2"]
-                if col and ("2" + col[0]) in self._sym_keys:
-                    return "2" + col[0]
-            if len(parts) == 2 and all(p in "WUBRG" for p in parts):
-                for key in (parts[0] + parts[1], parts[1] + parts[0]):
-                    if key in self._sym_keys:
-                        return key
-        return None
+        return resolve_symbol_key(token, self._sym_keys)
 
 
     def _fallback_symbol(self, token, height):

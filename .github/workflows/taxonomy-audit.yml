@@ -11,6 +11,9 @@ permissions:
   # the job fails so a new Scryfall layout/legality status, or a run that could
   # not finish at all, cannot rot unnoticed.
   issues: write
+  # Needed to download the last passing run's list of values, so this run can
+  # say what is new since then.
+  actions: read
 
 jobs:
   taxonomy-audit:
@@ -32,9 +35,29 @@ jobs:
       - name: Install project
         run: python -m pip install -e .
 
+      - name: Fetch the last check's list of values
+        # The newest passing run kept its card types, keywords, sets and so on
+        # as an artifact; comparing with it is how this run lists what is new.
+        # None yet (the first run, or one more than 90 days ago) only means
+        # there is nothing to compare with this week.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p previous
+          last=$(gh run list --workflow taxonomy-audit.yml --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -n "$last" ]; then
+            gh run download "$last" --name scryfall-taxonomy-snapshot --dir previous \
+              || echo "Run $last kept no list; nothing to compare with this week."
+          fi
+
       - name: Audit current Scryfall Default Cards snapshot
         id: audit
-        run: python tests/taxonomy_audit.py --current --report taxonomy-audit.md
+        run: >-
+          python tests/taxonomy_audit.py --current --report taxonomy-audit.md
+          --previous previous/taxonomy-snapshot.json
+          --snapshot-out taxonomy-snapshot.json
+          --summary-out run-summary.md --notice-out run-notice.txt
 
       - name: Upload audit evidence
         if: always()
@@ -44,28 +67,31 @@ jobs:
           path: taxonomy-audit.md
           if-no-files-found: warn
 
+      - name: Keep this run's list of values for the next check
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scryfall-taxonomy-snapshot
+          path: taxonomy-snapshot.json
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Say what the check found
-        # The run page's headline: one plain line in Annotations and a short
-        # summary, so a quiet week reads "Nothing to do" without opening the
-        # report. A failure says so in the step below instead.
-        if: success()
+        # The run page's headline: a short summary (what was checked, what is
+        # new since the last check, mana symbols without a picture) and, on a
+        # pass, one plain line in Annotations -- "Nothing to do", or "Something
+        # to look at" when a mana symbol has no picture. The audit writes both.
+        if: always()
+        env:
+          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
         run: |
-          count() { grep -m1 "^| $1 |" taxonomy-audit.md | awk -F'|' '{gsub(/ /, "", $3); print $3}'; }
-          printings=$(count "Card printing objects")
-          sets=$(count "Source set codes")
-          data=$(grep -m1 '^Scryfall bulk updated:' taxonomy-audit.md | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}' | head -n 1)
-          line="Scryfall's card data has nothing new the Deck Builder can't handle, so no update is needed. Checked ${printings} printings in ${sets} sets (Scryfall data of ${data})."
-          echo "::notice title=Nothing to do::${line}"
-          {
-            echo "## ✅ Nothing to do"
-            echo
-            echo "Scryfall's card data has nothing new the Deck Builder can't handle, so no update is needed."
-            echo
-            echo "- Checked: ${printings} printings in ${sets} sets"
-            echo "- Scryfall data from: ${data}"
-            echo
-            echo "The full report is the **scryfall-taxonomy-audit** file at the bottom of this page."
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f run-summary.md ]; then
+            cat run-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$AUDIT_OUTCOME" = "success" ] && [ -f run-notice.txt ]; then
+            notice=$(cat run-notice.txt)
+            echo "::notice title=${notice%%::*}::${notice#*::}"
+          fi
 
       - name: Close an earlier alert now that the check passes
         # VER-015: an alert issue left open after the problem went away reads
@@ -86,14 +112,16 @@ jobs:
 
       - name: Open an issue and email the owner when the job fails
         # Any failure needs a person: either the audit step itself exits
-        # non-zero, which happens only when current Scryfall data holds a layout
-        # or legality status this build cannot classify (real drift that needs a
-        # code change), or something before it broke and the audit never ran
-        # (install, network, a Scryfall outage). One deduplicated issue covers
-        # both. It is assigned to and mentions the repository owner because an
-        # assignment or mention is what GitHub always emails, whatever the
-        # owner's watch settings are -- a bare new issue from the Actions bot is
-        # emailed only to people watching every issue.
+        # non-zero, which happens only when current Scryfall data holds
+        # something this build cannot handle -- a layout or legality status it
+        # cannot classify, a new subtype group, missing card pictures (real
+        # drift that needs a code change) -- or something before it broke and
+        # the audit never ran (install, network, a Scryfall outage). One
+        # deduplicated issue covers both. It is assigned to and mentions the
+        # repository owner because an assignment or mention is what GitHub
+        # always emails, whatever the owner's watch settings are -- a bare new
+        # issue from the Actions bot is emailed only to people watching every
+        # issue.
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -110,15 +138,21 @@ jobs:
           fi
           {
             printf '@%s %s\n\n' "$OWNER" "$intro"
+            if [ "$AUDIT_RESULT" = "failure" ] && [ -f run-summary.md ]; then
+              cat run-summary.md
+            fi
             if [ "$AUDIT_RESULT" = "failure" ] && [ -f taxonomy-audit.md ]; then
+              printf '\n---\n\n'
               cat taxonomy-audit.md
             fi
             printf '\n\n---\nRun: %s\n' "$run_url"
           } > issue.md
           echo "::error title=Needs attention::${intro} An issue was opened and emailed to you."
           {
-            echo "## ⚠️ Needs attention"
-            echo
+            if [ ! -f run-summary.md ]; then
+              echo "## ⚠️ Needs attention"
+              echo
+            fi
             echo "${intro} An issue was opened and emailed to you."
           } >> "$GITHUB_STEP_SUMMARY"
           existing=$(gh issue list --state open --json number,title \

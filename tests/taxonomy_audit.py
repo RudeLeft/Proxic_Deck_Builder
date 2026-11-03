@@ -11,19 +11,29 @@ Usage:
 
 ``--current`` discovers and downloads Scryfall's current Default Cards export and
 refreshes all trusted catalogs before auditing it.
+
+The weekly workflow also passes ``--snapshot-out`` (this run's values, kept as
+an artifact), ``--previous`` (last run's, to list what is new), and
+``--summary-out``/``--notice-out`` (the run page's summary and one-line
+notice).
 """
 import argparse
 import collections
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
+import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mtgdb.database.bulk_import import iter_card_objects
+from mtgdb.database.authorities import (
+    SUBTYPE_AUTHORITIES, UPSTREAM_FINGERPRINT_META_KEY,
+)
 from mtgdb.database.constants import ART_LAYOUTS, NON_CARD_LAYOUTS
 from mtgdb.database.db import CardDB
 from mtgdb.database.semantics import _BFM_COMPLETE_TYPE_LINE
@@ -31,6 +41,7 @@ from mtgdb.database import semantics as S
 from mtgdb.database.schema import RULES_SUPERTYPES_META_KEY
 from mtgdb.database.sync import API_BASE, DatabaseSyncService
 import mtgdb.core.net as net
+from mtgdb.ui.mana import bundled_symbol_keys, resolve_symbol_key
 
 
 def download_current_default_cards(directory):
@@ -120,6 +131,199 @@ def picture_coverage(db):
     return {"cards": row[0] or 0, "png": row[1] or 0, "art_crop": row[2] or 0}
 
 
+# Card types whose cards already carry subtypes that Scryfall keeps no list
+# for (Plane -- Dominaria, Emblem -- Ajani, Dungeon -- Undercity). The app files
+# subtypes only under the groups in SUBTYPE_AUTHORITIES; a card type outside
+# both is a new subtype group the Subtype filter cannot offer.
+KNOWN_SUBTYPE_GROUPS_WITHOUT_LIST = frozenset(
+    {"Conspiracy", "Dungeon", "Emblem", "Plane"})
+
+COST_SYMBOL = re.compile(r"\{([^}]+)\}")
+
+
+def subtype_groups(db):
+    """Find subtype groups the app has no list for (VER-009).
+
+    Returns the card types seen with subtypes that no app subtype list covers,
+    the new ones among them, and any Scryfall ``<type>-types`` catalog that
+    exists for a card type the app keeps no list for.
+    """
+    card_types = db.catalog("card-types")
+    covered = {value for authority in SUBTYPE_AUTHORITIES
+               for value in authority.applies_to}
+    without_list = set()
+    for (type_line,) in db.conn.execute("SELECT type_line FROM cards"):
+        for face in str(type_line or "").split(" // "):
+            left, dash, right = face.partition(" — ")
+            if not dash or not right.strip():
+                continue
+            words = left.split()
+            mine = [value for value in card_types if value in words]
+            if mine and not any(value in covered for value in mine):
+                without_list.update(mine)
+    unused_lists, unchecked = [], []
+    for value in card_types:
+        if value in covered:
+            continue
+        name = f"{value.lower()}-types"
+        try:
+            net.get_json(f"{API_BASE}/catalog/{name}")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                unchecked.append(name)
+            continue
+        except (OSError, ValueError):
+            unchecked.append(name)
+            continue
+        unused_lists.append(name)
+    return {
+        "without_list": sorted(without_list),
+        "new_without_list": sorted(without_list - KNOWN_SUBTYPE_GROUPS_WITHOUT_LIST),
+        "unused_lists": unused_lists,
+        "unchecked": unchecked,
+    }
+
+
+def cost_symbols(db):
+    """Mana symbols in playable, non-joke cards' costs: {symbol: (cards, example)}."""
+    marks = ",".join("?" for _ in ART_LAYOUTS)
+    found = {}
+    rows = db.conn.execute(
+        "SELECT name, mana_cost, back_mana_cost FROM cards "
+        "WHERE COALESCE(set_type, '') <> 'funny' "
+        f"AND COALESCE(layout, '') NOT IN ({marks})", tuple(ART_LAYOUTS))
+    for name, cost, back in rows:
+        for token in set(COST_SYMBOL.findall(f"{cost or ''}{back or ''}")):
+            cards, example = found.get(token, (0, name))
+            found[token] = (cards + 1, example)
+    return found
+
+
+def joke_symbols():
+    """Symbols Scryfall marks as funny ({HW}, {L} on playtest cards); empty if unknown."""
+    try:
+        data = net.get_json(f"{API_BASE}/symbology")
+    except (OSError, ValueError):
+        return set()
+    return {str(item.get("symbol", "")).strip("{}")
+            for item in (data.get("data", []) if isinstance(data, dict) else [])
+            if isinstance(item, dict) and item.get("funny")}
+
+
+def missing_symbol_pictures(symbols, jokes=frozenset()):
+    """The real cost symbols the app draws as a grey circle, having no picture."""
+    keys = bundled_symbol_keys()
+    return {f"{{{token}}}": value for token, value in sorted(symbols.items())
+            if token not in jokes and resolve_symbol_key(token, keys) is None}
+
+
+def snapshot(db, sets, card_types, supertypes, subtypes, abilities, symbols):
+    """This run's values, by the names the run page shows them under."""
+    try:
+        upstream = json.loads(db.get_meta(UPSTREAM_FINGERPRINT_META_KEY, "{}") or "{}")
+    except (TypeError, ValueError):
+        upstream = {}
+    if not isinstance(upstream, dict):
+        upstream = {}
+    return {
+        "Card types": list(card_types),
+        "Supertypes": list(supertypes),
+        "Subtypes": [f"{value} ({category})" for value, category in subtypes],
+        "Keywords and ability words": [value for value, _category in abilities],
+        "Sets": [f"{name} ({str(code).upper()})" for code, name in sets],
+        "Formats": list(upstream.get("format_keys", [])),
+        "Rarities": list(upstream.get("rarities", [])),
+        "Set types": list(upstream.get("set_types", [])),
+        "Card shapes": list(upstream.get("layouts", [])),
+        "Legality statuses": list(upstream.get("legality_statuses", [])),
+        "Mana symbols in costs": [f"{{{token}}}" for token in sorted(symbols)],
+    }
+
+
+def news(current, previous):
+    """What each list gained since ``previous``; None when there is none.
+
+    Only lists the previous run also kept are compared, so adding a list
+    later does not report its whole contents as new.
+    """
+    if not isinstance(previous, dict):
+        return None
+    gained = {}
+    for key, values in current.items():
+        if not isinstance(previous.get(key), list):
+            continue
+        new = sorted(set(values) - set(previous[key]), key=str.casefold)
+        if new:
+            gained[key] = new
+    return gained
+
+
+def _listed(values, limit=20):
+    shown = ", ".join(values[:limit])
+    return shown + (f", and {len(values) - limit} more" if len(values) > limit else "")
+
+
+def news_lines(result):
+    gained = result["news"]
+    if gained is None:
+        return ["Nothing to compare with yet: the next run lists what is new "
+                "since this one."]
+    if not gained:
+        return ["Nothing new."]
+    return [f"- {key} ({len(values)}): {_listed(values)}"
+            for key, values in gained.items()]
+
+
+def symbol_lines(result):
+    missing = result["missing_symbols"]
+    if not missing:
+        return ["Every mana symbol in a card's cost has a picture."]
+    return [f"- {symbol} on {cards:,} card{'s' if cards != 1 else ''}, e.g. {example}"
+            for symbol, (cards, example) in missing.items()]
+
+
+def run_summary(result):
+    """The run page: a short Markdown summary and one plain notice line."""
+    checks = result["checks"]
+    passed = all(checks.values())
+    count = (f"{result['source']['objects']:,} printings in "
+             f"{result['source_sets']:,} sets")
+    data = (result.get("bulk_updated_at") or "")[:10] or "unknown"
+    missing = result["missing_symbols"]
+    gained = result["news"] or {}
+    if not passed:
+        heading = "## ⚠️ Needs attention"
+        intro = "Scryfall's card data has something the Deck Builder can't handle yet."
+    elif missing:
+        heading = "## 👀 Something to look at"
+        intro = ("Nothing urgent: the Deck Builder handles Scryfall's card data, "
+                 "but some mana symbols have no picture yet.")
+    else:
+        heading = "## ✅ Nothing to do"
+        intro = ("Scryfall's card data has nothing new the Deck Builder can't "
+                 "handle, so no update is needed.")
+    lines = [heading, "", intro, "", f"- Checked: {count}",
+             f"- Scryfall data from: {data}", ""]
+    if not passed:
+        lines += ["### What failed", ""]
+        lines += [f"- {label}" for label, ok in checks.items() if not ok]
+        lines.append("")
+    lines += ["### New since the last check", "", *news_lines(result), "",
+              "### Mana symbols without a picture", "", *symbol_lines(result), "",
+              "The full report is the **scryfall-taxonomy-audit** file at the "
+              "bottom of this page."]
+    summary = "\n".join(lines) + "\n"
+    title = ("Needs attention" if not passed
+             else "Something to look at" if missing else "Nothing to do")
+    notice = intro + f" Checked {count} (Scryfall data of {data})."
+    if gained:
+        notice += " New since the last check: " + "; ".join(
+            f"{key} {len(values)}" for key, values in gained.items()) + "."
+    if missing:
+        notice += " Mana symbols without a picture: " + ", ".join(missing) + "."
+    return summary, f"{title}::{notice}"
+
+
 def markdown(result):
     source = result["source"]
     pictures = result["pictures"]
@@ -172,6 +376,16 @@ def markdown(result):
             ", ".join(compatibility.get("subtype_authority_gaps", [])) or "none"),
         "- Mechanic authority gaps (diagnostic only): " + (
             ", ".join(compatibility.get("mechanic_authority_gaps", [])) or "none"),
+        "- Card types with subtypes Scryfall keeps no list for: " + (
+            ", ".join(result["subtype_groups"]["without_list"]) or "none"),
+        "- New ones among them: " + (
+            ", ".join(result["subtype_groups"]["new_without_list"]) or "none"),
+        "- Scryfall subtype lists the app does not use: " + (
+            ", ".join(result["subtype_groups"]["unused_lists"]) or "none"),
+        "- Subtype lists that could not be looked up: " + (
+            ", ".join(result["subtype_groups"]["unchecked"]) or "none"),
+        "", "## New since the last check", "", *news_lines(result),
+        "", "## Mana symbols without a picture", "", *symbol_lines(result),
         "", "## Integrity checks", "",
     ]
     for label, passed in checks.items():
@@ -200,6 +414,12 @@ def main(argv=None):
                         help="download and audit Scryfall's current Default Cards export")
     parser.add_argument("--online-catalogs", action="store_true")
     parser.add_argument("--report")
+    parser.add_argument("--snapshot-out",
+                        help="write this run's values as JSON, for the next run")
+    parser.add_argument("--previous",
+                        help="last run's --snapshot-out, to list what is new")
+    parser.add_argument("--summary-out", help="write the run page's Markdown summary")
+    parser.add_argument("--notice-out", help="write the run page's notice line")
     args = parser.parse_args(argv)
     if args.current and args.bulk_path:
         parser.error("provide either bulk_path or --current, not both")
@@ -231,6 +451,18 @@ def main(argv=None):
     supertypes = db.supertypes()
     subtypes = db.subtype_catalog()
     abilities = db.keyword_catalog()
+    groups = subtype_groups(db)
+    symbols = cost_symbols(db)
+    missing_symbols = missing_symbol_pictures(symbols, joke_symbols())
+    values = snapshot(db, discovered_sets, card_types, supertypes, subtypes,
+                      abilities, symbols)
+    previous = None
+    if args.previous and os.path.isfile(args.previous):
+        try:
+            with open(args.previous, encoding="utf-8") as handle:
+                previous = json.load(handle)
+        except (OSError, ValueError):
+            previous = None
     try:
         rules_supertypes = json.loads(
             db.get_meta(RULES_SUPERTYPES_META_KEY, "[]"))
@@ -310,6 +542,11 @@ def main(argv=None):
             not compatibility.get("unknown_layouts")),
         "current Scryfall legality statuses are understood": (
             not compatibility.get("unknown_legality_statuses")),
+        # A new card type with its own subtypes, or a Scryfall subtype list the
+        # app does not read, needs a new entry in SUBTYPE_AUTHORITIES.
+        "no card type has subtypes the app keeps no list for": (
+            not groups["new_without_list"] and not groups["unused_lists"]
+            and not groups["unchecked"]),
         # Printing needs each card's PNG and the Proxic Arena send needs its
         # art crop. A few new cards may still lack pictures; a renamed or
         # dropped Scryfall image field empties them all.
@@ -343,11 +580,24 @@ def main(argv=None):
         # an unknown layout or legality status failed.
         "compatibility": compatibility,
         "pictures": pictures,
+        "subtype_groups": groups,
+        "missing_symbols": missing_symbols,
+        "news": news(values, previous),
     }
     report = markdown(result)
     if args.report:
         with open(args.report, "w", encoding="utf-8") as handle:
             handle.write(report)
+    if args.snapshot_out:
+        with open(args.snapshot_out, "w", encoding="utf-8") as handle:
+            json.dump(values, handle, ensure_ascii=False, indent=1, sort_keys=True)
+    summary, notice = run_summary(result)
+    if args.summary_out:
+        with open(args.summary_out, "w", encoding="utf-8") as handle:
+            handle.write(summary)
+    if args.notice_out:
+        with open(args.notice_out, "w", encoding="utf-8") as handle:
+            handle.write(notice)
     print(report)
     db.close()
     if downloaded:

@@ -20,6 +20,51 @@ def _python_version(workflow):
     return None
 
 
+def _behaviour():
+    """Run the audit's pure helpers on made-up values (no network)."""
+    import importlib.util
+    from mtgdb.ui.mana import bundled_symbol_keys, resolve_symbol_key
+    spec = importlib.util.spec_from_file_location(
+        "taxonomy_audit", ROOT / "tests/taxonomy_audit.py")
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    keys = bundled_symbol_keys()
+    previous = {"Sets": ["Alpha (LEA)"], "Card types": ["Creature"]}
+    current = {"Sets": ["Alpha (LEA)", "Beta (LEB)"], "Card types": ["Creature"],
+               "Keywords and ability words": ["Flying"]}
+    gained = audit.news(current, previous)
+    missing = audit.missing_symbol_pictures(
+        {"C/W": (6, "Ulalek"), "G/W/P": (8, "Ajani"), "Q/Z": (2, "Odd Card"),
+         "HW": (1, "Joke Card")}, jokes={"HW"})
+    base = {"checks": {"ok": True}, "source": {"objects": 10},
+            "source_sets": 2, "bulk_updated_at": "2026-11-02T10:00"}
+    quiet = audit.run_summary({**base, "missing_symbols": {}, "news": gained})
+    look = audit.run_summary({**base, "missing_symbols": missing, "news": None})
+    failed = audit.run_summary({**base, "checks": {"ok": False},
+                                "missing_symbols": {}, "news": {}})
+    return {
+        "each real colorless and Phyrexian hybrid symbol has its own picture": all(
+            resolve_symbol_key(token, keys) == token.replace("/", "")
+            for token in ("C/W", "C/U", "C/B", "C/R", "C/G", "C/P",
+                          "W/U/P", "W/B/P", "U/B/P", "U/R/P", "B/R/P",
+                          "B/G/P", "R/W/P", "R/G/P", "G/W/P", "G/U/P")),
+        "only lists the previous run kept are compared, and only gains count": (
+            gained == {"Sets": ["Beta (LEB)"]}
+            and audit.news(current, None) is None),
+        "a symbol without a picture is listed; joke symbols are not": (
+            missing == {"{Q/Z}": (2, "Odd Card")}),
+        "the run page says Nothing to do, Something to look at, or Needs attention": (
+            quiet[1].startswith("Nothing to do::")
+            and "New since the last check: Sets 1." in quiet[1]
+            and "- Sets (1): Beta (LEB)" in quiet[0]
+            and look[1].startswith("Something to look at::")
+            and "{Q/Z} on 2 cards, e.g. Odd Card" in look[0]
+            and "Nothing to compare with yet" in look[0]
+            and failed[1].startswith("Needs attention::")
+            and "### What failed" in failed[0]),
+    }
+
+
 def main():
     audit = (ROOT / "tests/taxonomy_audit.py").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/taxonomy-audit.yml").read_text(
@@ -75,10 +120,12 @@ def main():
         "CI retains Markdown audit evidence": (
             "taxonomy-audit.md" in workflow and "actions/upload-artifact@" in workflow),
         "a passing run says so in one plain line on its run page": (
-            "if: success()" in workflow
-            and "::notice title=Nothing to do::" in workflow
+            "--summary-out run-summary.md" in workflow
+            and "--notice-out run-notice.txt" in workflow
             and "GITHUB_STEP_SUMMARY" in workflow
-            and "Card printing objects" in workflow),
+            and "::notice title=" in workflow
+            and "def run_summary(result):" in audit
+            and '"Nothing to do"' in audit),
         "CI emails the owner by issue when the job fails, drift or not": (
             "issues: write" in workflow
             # Any failure of the job, not only the audit step's own.
@@ -88,6 +135,17 @@ def main():
             # Assigned and mentioned, which is what GitHub always emails.
             and "--assignee" in workflow
             and "@%s" in workflow),
+        "the run lists what is new since the last passing check": (
+            "actions: read" in workflow
+            and "gh run download" in workflow
+            and "scryfall-taxonomy-snapshot" in workflow
+            and "--previous previous/taxonomy-snapshot.json" in workflow
+            and "--snapshot-out taxonomy-snapshot.json" in workflow
+            and "retention-days: 90" in workflow),
+        "a new subtype group fails the audit": (
+            "no card type has subtypes the app keeps no list for" in audit
+            and "KNOWN_SUBTYPE_GROUPS_WITHOUT_LIST" in audit
+            and '/catalog/{name}' in audit),
         "a passing run closes an earlier alert": (
             "gh issue close" in workflow
             and "Close an earlier alert now that the check passes" in workflow),
@@ -101,6 +159,7 @@ def main():
                 (ROOT / ".github/workflows/build-windows.yml").read_text(
                     encoding="utf-8"))),
     }
+    checks.update(_behaviour())
     ok = True
     for label, passed in checks.items():
         print(f"  [{'PASS' if passed else 'FAIL'}] {label}")
