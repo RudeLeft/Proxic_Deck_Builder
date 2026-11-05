@@ -3,9 +3,7 @@
 Proxic Arena draws a card from a real picture only when the deck brought one,
 so a deck goes to Arena as one package -- the decklist and the PNGs -- built in
 memory and sent straight to the player's Deck Depot by ``arena/connection.py``
-(Arena spec 0022). Nothing is saved to disk: there is no zip to keep (ARN-014),
-except the one File > Test Deck Export writes for testing (``ui/testing_export.py``,
-ARN-019).
+(Arena spec 0022). Nothing is saved to disk: there is no zip to keep (ARN-014).
 
     <DeckName>.txt
     real_cards/<Card Name> [SET].png   (or .jpg, when Arena takes JPEGs)

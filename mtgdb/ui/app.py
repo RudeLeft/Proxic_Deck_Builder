@@ -43,7 +43,6 @@ from mtgdb.ui.search import SearchFeatureMixin
 from mtgdb.ui.set_filters import SetFilterSupportMixin
 from mtgdb.ui.styles import install_ui_styles
 from mtgdb.ui.tables import TableInfrastructureMixin
-from mtgdb.ui.testing_export import TestingExportMixin
 from mtgdb.ui.updates import UpdateCheckMixin
 from mtgdb.ui.tokens import (
     MAIN_CARD_PREVIEW_HEIGHT, MAIN_CENTER_COLUMN_WIDTH, MAIN_DECK_WEIGHT,
@@ -56,7 +55,7 @@ log = logging.getLogger("mtg")
 
 class DeckBuilderApp(
         WorkspaceMixin, DatabaseSyncMixin, PrintingMixin,
-        DeckEditorMixin, DeckFileWorkflowMixin, ArenaExportMixin, TestingExportMixin,
+        DeckEditorMixin, DeckFileWorkflowMixin, ArenaExportMixin,
         DeckStatsMixin, ComparisonFeatureMixin,
         ManaSymbolsMixin, SetFilterSupportMixin,
         SearchFeatureMixin, TableFilterMixin, SearchResultsMixin,
@@ -239,7 +238,6 @@ class DeckBuilderApp(
         filemenu.add_command(label="Paste Decklist...", command=self._paste_deck)
         filemenu.add_command(label="Save Deck As...", command=self._save_deck)
         filemenu.add_command(label="Export JSON...", command=self._export_all_decks_json)
-        filemenu.add_command(label="Test Deck Export...", command=self._export_test_deck)
         filemenu.add_separator()
         filemenu.add_command(label="Close Deck", command=self._close_active_deck)
         file_btn.configure(menu=filemenu)
