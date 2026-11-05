@@ -1064,6 +1064,76 @@ def _only_the_window_names_arena_check():
         and "self._set_exact_name_batch(names)" in finder)
 
 
+def _test_deck_export_check():
+    """ARN-019: File > Test Deck Export saves Arena's package shape, every picture a full PNG."""
+    from mtgdb.ui.testing_export import save_test_deck, test_deck_job, test_deck_saved_text
+    deck = Deck("Goblins", "modern")
+    deck.add(_card("m59", "Mountain", "dd1", number="59"), "main", 6)
+    deck.add(_card("m60", "Mountain", "dd1", number="60"), "main", 6)
+    deck.add(_card("m61", "Mountain", "dd1", number="61"), "main", 5)
+    deck.add(_two_faced("d1", "Delver of Secrets", "Insectile Aberration", "isd"), "main", 2)
+    deck.add(_card("bare", "Pictureless Thing", "tst", png=None), "main", 1)
+    deck.add(_card("gob", "Goblin", "tevg", number="3", type_line="Token Creature — Goblin",
+                   content_kind="token"), "main", 1)
+    deck.add(_card("side", "Tarfire", "dd1", number="56"), "side", 3)
+    source = (ROOT / "mtgdb/ui/testing_export.py").read_text(encoding="utf-8")
+    app = (ROOT / "mtgdb/ui/app.py").read_text(encoding="utf-8")
+    file_menu = app.split("filemenu = ")[1].split("file_btn.pack")[0]
+    with tempfile.TemporaryDirectory() as directory:
+        base = pathlib.Path(directory)
+        job = test_deck_job(deck, base / "cache")
+        target = base / "Goblins.zip"
+        events = []
+        package = save_test_deck(
+            job, target, progress_cb=lambda *event: events.append(event),
+            ensure_image=_stub_downloader(), ensure_face=_stub_face_downloader())
+        with zipfile.ZipFile(target) as archive:
+            names = sorted(archive.namelist())
+            decklist = archive.read("Goblins.txt").decode("utf-8")
+            png = archive.read(f"{REAL_ART_DIRECTORY}/Mountain [DD1-60].png")
+            stored = {info.compress_type for info in archive.infolist()
+                      if info.filename.startswith(REAL_ART_DIRECTORY)}
+        cancel = threading.Event()
+        cancel.set()
+        cancelled_target = base / "Cancelled.zip"
+        try:
+            save_test_deck(job, cancelled_target, cancel_event=cancel,
+                           ensure_image=_stub_downloader(), ensure_face=_stub_face_downloader())
+            cancelled = False
+        except ArenaExportCancelled:
+            cancelled = True
+        left_behind = sorted(path.name for path in base.iterdir())
+    return (
+        names == [
+            "Goblins.txt",
+            f"{REAL_ART_DIRECTORY}/Delver of Secrets [ISD].png",
+            f"{REAL_ART_DIRECTORY}/Goblin [TEVG].png",
+            f"{REAL_ART_DIRECTORY}/Insectile Aberration [ISD].png",
+            f"{REAL_ART_DIRECTORY}/Mountain [DD1-60].png",
+            f"{REAL_ART_DIRECTORY}/Mountain [DD1-61].png",
+            f"{REAL_ART_DIRECTORY}/Mountain [DD1].png"]
+        # The main deck with its Tokens section; no sideboard, the deck's own printings.
+        and "6 Mountain [DD1:59]" in decklist and "5 Mountain [DD1:61]" in decklist
+        and decklist.endswith("// Tokens\n1 Goblin [TEVG:3]\n")
+        and "Tarfire" not in decklist and "Sideboard" not in decklist
+        # Full PNGs, stored as they are; nothing named instead of sent.
+        and png == _PNG_BYTES + b"m60" and stored == {zipfile.ZIP_STORED}
+        and (package.image_count, package.back_face_count, package.token_pictures) == (6, 1, 1)
+        and package.missing_art == ("Pictureless Thing",)
+        and events and events[-1][0] == "package"
+        and test_deck_saved_text(package, str(target)) == (
+            "Saved Goblins.zip with 6 pictures. 1 card has no picture: Pictureless Thing.")
+        # Cancel saves nothing, not even a temporary file.
+        and cancelled and left_behind == ["Goblins.zip", "cache"]
+        # One File menu item; it never talks to Arena and makes no JPEG or crop.
+        and 'label="Test Deck Export...", command=self._export_test_deck' in file_menu
+        and "TestingExportMixin" in app
+        and "mtgdb.arena.connection" not in source and "mtgdb.arena.pictures" not in source
+        and "known_pictures" not in source and "prepare_picture" not in source
+        and "printings=True" in source and "os.replace(" in source and "os.fsync(" in source
+        and "submit_deck_file_job(" in source and 'text="Cancel"' in source)
+
+
 def main():
     checks = {
         "art filenames resolve through Arena's own rule": _art_naming_check(),
@@ -1098,6 +1168,8 @@ def main():
         "a picture's fingerprint is remembered for the next send": _fingerprints_check(),
         "what pictures go is Arena's rules' to say, and the window follows them":
             _rules_pictures_check(),
+        "File > Test Deck Export saves the package with every picture as a PNG":
+            _test_deck_export_check(),
     }
     ok = True
     for label, passed in checks.items():

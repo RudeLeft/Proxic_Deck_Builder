@@ -89,6 +89,8 @@ SOURCE_MARKERS = {
     "mtgdb/ui/deck_files.py": ("class DeckFileWorkflowMixin", "def _open_deck("),
     "mtgdb/ui/arena_export.py": (
         "class ArenaExportMixin", "def _export_arena(", "class ArenaExportWindow"),
+    "mtgdb/ui/testing_export.py": (
+        "class TestingExportMixin", "def _export_test_deck(", "def save_test_deck("),
     "mtgdb/ui/deck_stats.py": ("class DeckStatsMixin", "def _render_legality("),
     "mtgdb/ui/workspace.py": ("WORKSPACE_AUTOSAVE_MS", "class WorkspaceMixin"),
     "mtgdb/ui/database_sync.py": ("class DatabaseSyncMixin", "def _poll_sync_events("),

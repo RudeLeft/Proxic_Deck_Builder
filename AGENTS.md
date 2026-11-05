@@ -144,6 +144,7 @@ mtgdb/
     deck_files.py        #   deck open/save/import composition + JSON export workflow
     arena_export.py      #   the Proxic Arena Export window: link, name, deck check, tokens, send
     arena_connection.py  #   the export window's link form and linked line
+    testing_export.py    #   File > Test Deck Export: the open deck saved as a test zip
     deck_stats.py        #   stats pane: curve, mana, odds, sample hands + large-hand viewer, legality
     workspace.py         #   session/geometry coordination, restored selection, autosave scheduling
     database_sync.py     #   refresh scheduling, progress dialog, Tk polling
@@ -178,7 +179,7 @@ which dependency directions are legal.
 | Card preview & images | `mtgdb/ui/card_detail.py`, `mtgdb/ui/styles.py`, `mtgdb/ui/tokens.py` | `mtgdb/images/service.py`, `mtgdb/core/cache_names.py`, `mtgdb/core/net.py`, `mtgdb/database/constants.py`, `mtgdb/deck/legality.py` |
 | Deck editing | `mtgdb/ui/deck.py`, `mtgdb/ui/tables.py`, `mtgdb/ui/search.py`, `mtgdb/ui/search_checklist.py`, `mtgdb/ui/comparison_controls.py` | `mtgdb/deck/model.py`, `mtgdb/deck/sessions.py` |
 | Deck file open/save/import/export | `mtgdb/ui/deck_files.py`, `mtgdb/ui/set_filters.py` | `mtgdb/deck/io.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/arena_support.py`, `mtgdb/database/db.py`, `mtgdb/database/queries.py`, `mtgdb/database/taxonomy.py` |
-| Proxic Arena export | `mtgdb/ui/arena_export.py`, `mtgdb/ui/arena_connection.py`, `mtgdb/ui/app.py` | `mtgdb/arena/export.py`, `mtgdb/arena/pictures.py`, `mtgdb/arena/connection.py`, `mtgdb/core/secret_store.py`, `mtgdb/deck/arena_check.py`, `mtgdb/deck/arena_support.py`, `mtgdb/deck/arena_limits.py`, `mtgdb/deck/arena_tokens.py`, `mtgdb/deck/arena_printings.py`, `mtgdb/database/queries.py`, `mtgdb/printing/service.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/io.py` |
+| Proxic Arena export | `mtgdb/ui/arena_export.py`, `mtgdb/ui/arena_connection.py`, `mtgdb/ui/testing_export.py`, `mtgdb/ui/app.py` | `mtgdb/arena/export.py`, `mtgdb/arena/pictures.py`, `mtgdb/arena/connection.py`, `mtgdb/core/secret_store.py`, `mtgdb/deck/arena_check.py`, `mtgdb/deck/arena_support.py`, `mtgdb/deck/arena_limits.py`, `mtgdb/deck/arena_tokens.py`, `mtgdb/deck/arena_printings.py`, `mtgdb/database/queries.py`, `mtgdb/printing/service.py`, `mtgdb/deck/file_jobs.py`, `mtgdb/deck/io.py` |
 | Deck statistics | `mtgdb/ui/deck_stats.py`, `mtgdb/ui/comparison.py`, `mtgdb/ui/comparison_controls.py` | `mtgdb/deck/analysis.py`, `mtgdb/deck/legality.py` |
 | Comparison | `mtgdb/ui/comparison.py`, `mtgdb/ui/comparison_controls.py`, `mtgdb/ui/deck.py`, `mtgdb/ui/deck_stats.py` | `mtgdb/comparison/models.py`, `mtgdb/images/service.py` |
 | Printing | `mtgdb/ui/printing.py` | `mtgdb/printing/service.py`, `mtgdb/printing/renderer.py`, `mtgdb/core/background_jobs.py`, `mtgdb/core/cache_names.py`, `mtgdb/core/net.py` |
@@ -273,6 +274,7 @@ only in the module that owns X.
 | `mtgdb/ui/deck_files.py` | Own filter-independent TXT open/import, TXT save dialogs, JSON projection/export, and user-selected deck-file paths |
 | `mtgdb/ui/arena_connection.py` | The export window's link form and its linked line |
 | `mtgdb/ui/arena_export.py` | Own the Proxic Arena Export window: the deck's name on Arena, the deck check, the tokens, the send with its progress and cancel, and what reached the Deck Depot |
+| `mtgdb/ui/testing_export.py` | Own File > Test Deck Export: the save dialog, its progress popup with Cancel, and what it says once the test zip is saved (ARN-019) |
 | `mtgdb/ui/deck_stats.py` | Stats pane dashboard layout, sectioned scrollable presentation, counted curve/type/color legends, mana presentation, draw odds, current-deck seven-row sample-hand interaction + exact-printing hydration/View Hand coordination, basic legality-check presentation |
 | `mtgdb/ui/workspace.py` | Workspace/session coordination, detached Tk snapshot capture, retained Mainboard/Sideboard sash capture/restore, restored-result selection, autosave scheduling and writer shutdown/flush |
 | `mtgdb/ui/database_sync.py` | Refresh scheduling, progress-dialog presentation, Tk polling, completion reconciliation, error/shutdown adaptation |
@@ -363,6 +365,7 @@ have at least two routing examples.
 | `mtgdb/ui/deck_files.py` | change filter-independent Open Deck TXT resolution<br>change Open/Save/JSON-export projection, prompts, or user-selected file paths | `mtgdb/deck/io.py`; `mtgdb/deck/file_jobs.py`; `mtgdb/database/queries.py` | Open Deck MUST resolve TXT names against the complete local card database and MUST NOT consume Search/Printings state. TXT parsing/serialization and resolver ranking stay in non-UI owners, and blocking disk/parser work stays off Tk. |
 | `mtgdb/ui/arena_connection.py` | change the export window's link form or its linked line<br>change what linking or unlinking this computer says | `mtgdb/arena/connection.py`; `mtgdb/core/secret_store.py`; `mtgdb/ui/components.py` | Presentation only: the link, the token and the saved rules belong to the connection module, and the network work runs on a worker. |
 | `mtgdb/ui/arena_export.py` | change the Proxic Arena Export window, its rows, its name check, its send progress or cancel<br>change what the window says after a send or a refusal | `mtgdb/arena/export.py`; `mtgdb/arena/connection.py`; `mtgdb/deck/arena_check.py`; `mtgdb/printing/service.py` | Presentation only: the package, the requests, the measurements and the playable-name comparison all belong to the Tk-free owners it composes. |
+| `mtgdb/ui/testing_export.py` | change File > Test Deck Export, what its zip holds, its progress or cancel<br>change what it says once the zip is saved | `mtgdb/arena/export.py`; `mtgdb/deck/arena_tokens.py`; `mtgdb/printing/service.py` | Presentation and the one file write only: the package is `arena/export.py`'s and the PNGs printing's; it never talks to Arena. |
 | `mtgdb/ui/deck_stats.py` | change stats-pane metric-list/curve/mana/type/color presentation or counted legends<br>change draw odds, current-deck sample-hand Draw/View Hand interaction, exact-printing hydration, stale-hand cleanup, or basic legality-check presentation | `mtgdb/deck/analysis.py`; `mtgdb/deck/legality.py`; `mtgdb/deck/model.py`; `mtgdb/ui/comparison_controls.py`; `mtgdb/ui/comparison.py` | Hand generation/statistical formulas and legality rules remain Tk-free; large-card grid rendering stays in the comparison view. |
 | `mtgdb/ui/workspace.py` | change autosave scheduling, detached snapshot submission, or workspace/session coordination<br>change writer shutdown/flush, retained Mainboard/Sideboard sash capture/restore, or restored-result selection coordination | `mtgdb/workspace/repository.py`; `mtgdb/deck/sessions.py`; `mtgdb/ui/search.py` | Do not know individual Search filter controls or implement JSON persistence. |
 | `mtgdb/ui/database_sync.py` | change database refresh scheduling/prompt/progress presentation<br>change Tk polling, completion reconciliation, sync error, or shutdown adaptation | `mtgdb/database/sync.py`; `mtgdb/search/controller.py`; `mtgdb/ui/search.py` | Download/import logic and worker lifecycle stay in the Tk-free sync service. |
@@ -426,7 +429,7 @@ every feature together and is exempt.
 | --- | --- | --- |
 | Search | `search.py`, `search_filters.py`, `search_printings.py`, `search_checklist.py`, `set_filters.py`, `table_filters.py`, `results.py`, `tables.py`, `autocomplete.py` | `mtgdb.search.`, `mtgdb.database.constants`, `mtgdb.preferences.` |
 | Deck | `deck.py`, `deck_files.py`, `deck_stats.py` | `mtgdb.deck.` |
-| Arena export | `arena_export.py`, `arena_connection.py` | `mtgdb.arena.`, `mtgdb.deck.`, `mtgdb.printing.` |
+| Arena export | `arena_export.py`, `arena_connection.py`, `testing_export.py` | `mtgdb.arena.`, `mtgdb.deck.`, `mtgdb.printing.` |
 | Comparison | `comparison.py`, `comparison_controls.py` | `mtgdb.comparison.`, `mtgdb.images.` |
 | Card detail | `card_detail.py` | `mtgdb.images.`, `mtgdb.deck.legality`, `mtgdb.database.constants` |
 | Printing | `printing.py` | `mtgdb.printing.` |
@@ -1414,7 +1417,8 @@ every feature together and is exempt.
   _Verification:_ **AUTO**.
 - **ARN-014 — MUST:** Send a deck straight to the player's Deck Depot, with no
   file saved anywhere: no file dialog, no zip on disk, and no zip option in any
-  menu (owner decisions S1, S6, 2026-10-27). The deck's name on Arena starts as
+  menu (owner decisions S1, S6, 2026-10-27), except File > Test Deck Export, which
+  is for testing and sends nothing (ARN-019). The deck's name on Arena starts as
   the deck's own name and MAY be changed in the window; it names Arena's copy
   only, never the deck here. When the player's Deck Depot already has a deck by
   that name (compared as Arena compares names, case and surrounding spaces
@@ -1484,6 +1488,18 @@ every feature together and is exempt.
   printing adds nothing; a missing printing picture is not missing art (the
   line wears its name's). Rules that do not say mean one picture per name.
   `arena/export.py` owns it. _Verification:_ **AUTO**.
+- **ARN-019 — MUST:** Offer **File > Test Deck Export...**, the one place a zip
+  is saved (owner decision 2026-11-04, for testing): it saves the open deck,
+  where the player chooses, in Arena's own package shape so Arena and its tests
+  read it as it is -- the main deck's decklist with its Tokens section at the
+  root, and `real_cards/` holding one full PNG per card name, each other
+  printing of a name as `[SET-NUM]` (ARN-018), back faces and token pictures
+  (ARN-002, ARN-013). It MUST hold every picture: no Arena is asked anything, no
+  light JPEG or art crop is made, and the deck keeps its own printings. The work
+  MUST run on the deck-file worker with progress and Cancel, write the file
+  atomically, and say how many pictures were saved and which cards had none.
+  The Proxic Arena Export window MUST stay unchanged (ARN-014). `ui/testing_export.py`
+  owns it, `arena/export.py` the package. _Verification:_ **AUTO**.
 - **DECK-011 — MUST:** Apply deck-construction checks only for explicitly
   verified format profiles. Current Brawl and Competitive Brawl MUST use exactly
   100 cards, singleton construction, and no sideboard; Commander/Commander 1v1
