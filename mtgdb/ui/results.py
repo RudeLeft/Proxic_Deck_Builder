@@ -10,7 +10,7 @@ from mtgdb.search.results import (
     CompactResultSelection, ResultPreparationWorker, SearchResultStore,
 )
 from mtgdb.ui.card_detail import _ResultsGalleryWindow
-from mtgdb.ui.components import card_count_text
+from mtgdb.ui.components import card_count_text, scroll_step
 from mtgdb.ui.tables import TABLE_COLUMNS, TABLE_COLUMN_ORDER
 
 
@@ -717,7 +717,9 @@ class SearchResultsMixin:
         return "break"
 
     def _result_scroll(self, number, what="units"):
-        amount = int(number)
+        amount = scroll_step(number)
+        if not amount:
+            return
         if str(what) == "pages":
             amount *= max(1, self._result_visible_capacity() - 1)
         self._set_result_top(self._result_top + amount)

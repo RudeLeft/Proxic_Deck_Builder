@@ -1245,6 +1245,20 @@ def main():
     for _step in range(30):
         scroll_owner._result_scroll(1, "units")
         _record_scroll_stop()
+    # Newer Tk sends the step as text with a decimal point ("3.0"); a part
+    # step still moves one, and nonsense moves nothing (2026-11-22 crash).
+    from mtgdb.ui.components import scroll_step
+    scroll_owner._set_result_top(0)
+    scroll_owner._result_yview("scroll", "3.0", "units")
+    _record_scroll_stop()
+    decimal_step_scrolls = scroll_owner._result_top == 3
+    scroll_owner._result_yview("scroll", "-0.5", "units")
+    scroll_owner._result_yview("scroll", "nonsense", "units")
+    _record_scroll_stop()
+    decimal_step_scrolls = (
+        decimal_step_scrolls and scroll_owner._result_top == 2
+        and [scroll_step(v) for v in ("3.0", "-2.0", "0.4", "-0.4", "0", "7", 2.6, "x", None)]
+        == [3, -2, 1, -1, 0, 7, 3, 0, 0])
     every_scroll_stop_matches_the_store = all(scroll_stops)
     pool_order_follows_the_ring = (
         list(scroll_owner.results_tv.order) == scroll_owner._result_live_slots)
@@ -2217,6 +2231,8 @@ def main():
             # The physical order has to keep following the ring, or the next
             # rotation moves the wrong rows.
             and pool_order_follows_the_ring),
+        "a decimal scroll step (\"3.0\") scrolls Results instead of crashing": (
+            decimal_step_scrolls),
         "the standard core is built and every other filter is in Advanced": (
             'text="Active Filters"' not in search_source
             and "self._build_name_filter(form)" in search_source

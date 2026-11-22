@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from mtgdb.ui.components import (
+    scroll_step,
     ClassicButton, ClassicCheckbutton, ClassicEntry, ClassicRadiobutton,
 )
 from mtgdb.ui.styles import scaled_pixels
@@ -349,9 +350,8 @@ class VirtualChecklistView(tk.Frame):
                 return
             self._top = round(fraction * max(0, total - self._capacity))
         elif args[0] == "scroll" and len(args) >= 3:
-            try:
-                amount = int(args[1])
-            except (TypeError, ValueError):
+            amount = scroll_step(args[1])
+            if not amount:
                 return
             if str(args[2]) == "pages":
                 amount *= max(1, self._visible_rows - 1)

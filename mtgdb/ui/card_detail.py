@@ -18,6 +18,7 @@ from mtgdb.images.service import (
     card_viewable_faces,
 )
 from mtgdb.ui.components import (
+    scroll_step,
     AppButton, autohide_scrollbar, card_count_text, format_display_name)
 from mtgdb.ui.tokens import (
     CARD_PREVIEW_PORTRAIT_SIZE,
@@ -931,10 +932,7 @@ class _ResultsGalleryWindow:
             self.yview_scroll(args[1], args[2])
 
     def yview_scroll(self, number, what="units"):
-        try:
-            amount = int(number)
-        except (TypeError, ValueError):
-            return
+        amount = scroll_step(number)
         if not amount:
             return
         if str(what) == "pages":

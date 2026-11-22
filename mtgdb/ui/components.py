@@ -340,6 +340,26 @@ _MENUBUTTON_STYLES = {
 }
 
 
+def scroll_step(number):
+    """Return a scroll command's step count as a whole number.
+
+    Tk sends the count as text, and newer Tk builds (and some touchpads and
+    scrollbar arrows) send it as a decimal such as ``"3.0"`` or ``"0.5"``,
+    which ``int()`` refuses. A part step still moves one, in its direction;
+    anything that is not a number moves nothing.
+    """
+    try:
+        value = float(number)
+    except (TypeError, ValueError):
+        return 0
+    if value != value or value in (float("inf"), float("-inf")):
+        return 0
+    whole = int(round(value))
+    if whole == 0 and value:
+        return 1 if value > 0 else -1
+    return whole
+
+
 def visible_text_columns(text):
     """Return a conservative Tk character width for a visible text label."""
     widest = 0
@@ -1076,7 +1096,7 @@ class ScrollZone(ttk.Frame):
     def _yview(self, *args):
         """Scrollbar command: arrows and the wheel move a step, not one pixel."""
         if len(args) == 3 and args[0] == "scroll" and args[2] == "units":
-            args = ("scroll", int(args[1]) * self._step, "units")
+            args = ("scroll", scroll_step(args[1]) * self._step, "units")
         self.canvas.yview(*args)
 
     def scroll_units(self, units):
