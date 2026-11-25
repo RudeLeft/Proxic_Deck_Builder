@@ -671,7 +671,11 @@ every feature together and is exempt.
 - **SRCH-011 — MUST:** Route the deck action that searches alternate printings
   through the Search feature's `_apply_cards_search_preset`; direct manipulation
   of individual search widgets or filter variables is prohibited in `ui/deck.py`.
-  _Verification:_ **AUTO**.
+  The preset MUST set the Search Scope to every kind of game card a deck holds
+  (`DECK_SEARCH_CONTENT_TRAITS`: Cards, Tokens and Emblems), so a token or
+  emblem in a deck finds its other printings; Art Series stay off, and the
+  Search form's own default stays Cards (DATA-008), which Clear restores
+  (owner 2026-11-25). _Verification:_ **AUTO**.
 - **SRCH-012 — MUST:** Capture and restore Search-owned workspace state in
   `ui/search.py`; `ui/workspace.py` coordinates persistence without knowledge of
   individual Search widget/catalog/set-variable names. The saved scope MUST

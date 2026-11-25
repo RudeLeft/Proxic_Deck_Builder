@@ -100,6 +100,11 @@ CONTENT_TRAIT_KEYS = {
     "content_art_series": "art",
 }
 DEFAULT_CONTENT_TRAITS = ("content_cards",)
+# SRCH-011 (owner 2026-11-25): a deck card's right-click search looks through
+# every kind of game card a deck holds, so a token's or an emblem's other
+# printings are found; the Search form's own default stays Cards. Art Series
+# are art prints, never deck cards, and stay off (DATA-008).
+DECK_SEARCH_CONTENT_TRAITS = ("content_cards", "content_tokens", "content_emblems")
 TRAIT_CHOICES = (
     ("content_cards", "Cards"),
     ("content_tokens", "Tokens"),
@@ -2417,6 +2422,10 @@ class SearchFeatureMixin:
         if not names:
             return False
         self._clear_search()
+        self._selected_traits = set(DECK_SEARCH_CONTENT_TRAITS)
+        self._content_types_from_traits()
+        self._refresh_split_trait_button_texts()
+        self._on_content_filter_change()
         self._set_exact_name_batch(names)
         self._search_printings.select_all_present_types_and_sets()
         self._update_search_filter_summary()

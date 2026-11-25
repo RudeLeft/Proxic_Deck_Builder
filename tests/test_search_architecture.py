@@ -1423,6 +1423,43 @@ def main():
         (ROOT / "mtgdb/ui/app.py").read_text(encoding="utf-8"),
         "_start_post_paint_initialization")
 
+    # SRCH-011: a deck card's right-click search, run through the real preset
+    # on a stand-in that records what it was asked to do, in order.
+    class _DeckSearchOwner:
+        _apply_cards_search_preset = SearchFeatureMixin._apply_cards_search_preset
+        _content_types_from_traits = SearchFeatureMixin._content_types_from_traits
+
+        def __init__(self):
+            self.order, self.names = [], ()
+            self._selected_traits = {"content_cards"}
+
+            class _Printings:
+                def select_all_present_types_and_sets(inner):
+                    self.order.append("printings")
+            self._search_printings = _Printings()
+
+        def _clear_search(self):
+            self._selected_traits = {"content_cards"}
+            self.order.append("clear")
+
+        def _refresh_split_trait_button_texts(self):
+            pass
+
+        def _on_content_filter_change(self):
+            self.order.append("scope")
+
+        def _set_exact_name_batch(self, names):
+            self.names = tuple(names)
+
+        def _update_search_filter_summary(self):
+            pass
+
+    deck_search_owner = _DeckSearchOwner()
+    deck_search_owner._apply_cards_search_preset([{"name": "Goblin", "content_kind": "token"}])
+    deck_search_scope = deck_search_owner._content_types_from_traits()
+    deck_search_names = deck_search_owner.names
+    deck_search_order = deck_search_owner.order
+
     checks = {
         "catalog loads off-lock give identical results and warming caches": (
             _catalog_reader_and_warm_check()),
@@ -2216,6 +2253,11 @@ def main():
             and len(idle_recorder.infos) == 1
             and idle_recorder.infos[0][0] == "No cards yet"
             and "update database" in idle_recorder.infos[0][1].casefold()),
+        "a deck card's search looks through Cards, Tokens and Emblems, not Art Series": (
+            deck_search_scope == {"card", "token", "emblem"}
+            and deck_search_names == ("Goblin",)
+            and deck_search_order[:2] == ["clear", "scope"]
+            and "art" not in deck_search_scope),
         "Search Clear cancels a queued trusted-filter Search": (
             search_source.index('def _clear_search(self):')
             < search_source.index('self._pending_search_request = False',
