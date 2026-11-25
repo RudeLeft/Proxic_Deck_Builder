@@ -2636,7 +2636,9 @@ every feature together and is exempt.
   change is found by the weekly check and not by a user. It MUST fail when a
   card type carries subtypes that no app subtype list covers and that is not
   one of `KNOWN_SUBTYPE_GROUPS_WITHOUT_LIST` (Plane, Emblem, Dungeon,
-  Conspiracy today), or when Scryfall has a `<type>-types` catalog for a card
+  Conspiracy today); a card type that shares another's list
+  (`SHARED_SUBTYPE_LISTS`: Kindred uses the creature types, Comprehensive Rules
+  205.3m) counts as covered wherever that list is kept; or when Scryfall has a `<type>-types` catalog for a card
   type the app keeps no list for: either needs a new `SUBTYPE_AUTHORITIES`
   entry. It MUST list, without failing, every mana symbol in a playable card's
   cost that has no bundled picture (Scryfall's joke symbols excepted), using

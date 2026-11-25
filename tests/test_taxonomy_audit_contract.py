@@ -42,7 +42,22 @@ def _behaviour():
     look = audit.run_summary({**base, "missing_symbols": missing, "news": None})
     failed = audit.run_summary({**base, "checks": {"ok": False},
                                 "missing_symbols": {}, "news": {}})
+    from mtgdb.database.authorities import SUBTYPE_AUTHORITIES
+    covered = audit.covered_card_types(SUBTYPE_AUTHORITIES)
+    types = ["Artifact", "Conspiracy", "Creature", "Instant", "Kindred", "Plane", "Sorcery",
+             "Widget"]
+    dash = " \u2014 "
     return {
+        "Kindred shares the creature list, so a Kindred Plane is not a new group": (
+            "Kindred" in covered
+            and audit.types_without_list(f"Kindred Plane{dash}New Coopenna Pigeon", types,
+                                         covered) == set()
+            and audit.types_without_list(f"Kindred Instant{dash}Elf", types, covered) == set()
+            and audit.types_without_list(f"Plane{dash}Dominaria", types, covered) == {"Plane"}
+            and audit.types_without_list(f"Widget{dash}Gizmo", types, covered) == {"Widget"}
+            and audit.types_without_list("Kindred Sorcery", types, covered) == set()
+            and audit.types_without_list(
+                f"Instant{dash}Arcane // Widget{dash}Gizmo", types, covered) == {"Widget"}),
         "each real colorless and Phyrexian hybrid symbol has its own picture": all(
             resolve_symbol_key(token, keys) == token.replace("/", "")
             for token in ("C/W", "C/U", "C/B", "C/R", "C/G", "C/P",

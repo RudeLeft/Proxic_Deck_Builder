@@ -138,7 +138,40 @@ def picture_coverage(db):
 KNOWN_SUBTYPE_GROUPS_WITHOUT_LIST = frozenset(
     {"Conspiracy", "Dungeon", "Emblem", "Plane"})
 
+# Card types that use another type's subtype list. Creatures and kindreds share
+# their subtypes, the creature types (Comprehensive Rules 205.3m): "Kindred
+# Instant -- Elf" files Elf as a creature type, so a Kindred card is covered
+# wherever the app keeps the Creature list.
+SHARED_SUBTYPE_LISTS = {"Kindred": "Creature"}
+
 COST_SYMBOL = re.compile(r"\{([^}]+)\}")
+
+
+def covered_card_types(authorities):
+    """The card types whose subtypes some app subtype list files."""
+    covered = {value for authority in authorities for value in authority.applies_to}
+    covered.update(shares for shares, owner in SHARED_SUBTYPE_LISTS.items()
+                   if owner in covered)
+    return covered
+
+
+def types_without_list(type_line, card_types, covered):
+    """The card types of a type line whose subtypes no app list covers.
+
+    Empty when the line has no subtypes, or when any of its card types is
+    covered: a "Kindred Plane -- New Coopenna Pigeon" (Scryfall's Unknown
+    Event playtest card, 2026-11) is covered through Kindred.
+    """
+    found = set()
+    for face in str(type_line or "").split(" // "):
+        left, dash, right = face.partition(" \u2014 ")
+        if not dash or not right.strip():
+            continue
+        words = left.split()
+        mine = [value for value in card_types if value in words]
+        if mine and not any(value in covered for value in mine):
+            found.update(mine)
+    return found
 
 
 def subtype_groups(db):
@@ -149,18 +182,10 @@ def subtype_groups(db):
     exists for a card type the app keeps no list for.
     """
     card_types = db.catalog("card-types")
-    covered = {value for authority in SUBTYPE_AUTHORITIES
-               for value in authority.applies_to}
+    covered = covered_card_types(SUBTYPE_AUTHORITIES)
     without_list = set()
     for (type_line,) in db.conn.execute("SELECT type_line FROM cards"):
-        for face in str(type_line or "").split(" // "):
-            left, dash, right = face.partition(" — ")
-            if not dash or not right.strip():
-                continue
-            words = left.split()
-            mine = [value for value in card_types if value in words]
-            if mine and not any(value in covered for value in mine):
-                without_list.update(mine)
+        without_list.update(types_without_list(type_line, card_types, covered))
     unused_lists, unchecked = [], []
     for value in card_types:
         if value in covered:
